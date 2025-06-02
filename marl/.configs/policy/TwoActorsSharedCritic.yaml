@@ -2,20 +2,20 @@ components:
   actor_0:
     network_type: "mlp"
     network_class: "actor"
-    actor_obs_dim: 43
-    num_actions: 7
+    actor_obs_dim: 39
+    num_actions: 6
     actor_hidden_dims: [256,256]
   
   actor_1:
     network_type: "mlp"
     network_class: "actor"
-    actor_obs_dim: 43
-    num_actions: 7
+    actor_obs_dim: 39
+    num_actions: 6
     actor_hidden_dims: [256,256]
 
   critic:
     network_type: "mlp"
     network_class: "critic"
-    critic_obs_dim: 105
+    critic_obs_dim: 95
     critic_out_dim: 1
     critic_hidden_dims: [256,256]

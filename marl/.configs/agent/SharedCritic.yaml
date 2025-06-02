@@ -2,19 +2,19 @@ agent_class: BasicMARLAgent
 
 actor_0:
   actor_observations: [
-    [robot0_proprio-state, 43] #(43,)
+    [robot0_proprio-state, 39] #(39,)
   ]
 
 actor_1:
   actor_observations: [
-    [robot1_proprio-state, 43] #(43,)
+    [robot1_proprio-state, 39] #(39,)
   ]
 
 critic:
   critic_observations: [
-    [robot0_proprio-state, 43], #(43,)
-    [robot1_proprio-state, 43], #(43,)
-    [object-state, 19] #(19,)
+    [robot0_proprio-state, 39], #(39,)
+    [robot1_proprio-state, 39], #(39,)
+    [object-state, 17] #(17,)
   ]
 
 kwargs: 
