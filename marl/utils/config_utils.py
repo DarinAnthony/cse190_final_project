@@ -35,7 +35,7 @@ def instantiate_env(config: DictConfig):
     Returns:
         Constructed environment instance
     """
-    env_config = config["environment"]
+    env_config = config.get("environment", config)
     env_kwargs = env_config.get("env_kwargs", {})
     
     # Resolve controller configuration if present
