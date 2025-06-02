@@ -264,14 +264,13 @@ def instantiate_agent(agent_config: DictConfig, env: Any, policy: MultiAgentPoli
             observation_config=observation_config,
             num_transitions_per_env=num_transitions_per_env,
             normalize_observations=normalize_observations,
-            vae_config = {
-                'latent_dim': 8,
-                'hidden_dim': 256
-            },
+            vae_config = agent_config.get("clas_training").get("vae_config", {}),
+            sac_config = agent_config.get("clas_training").get("sac_config", {}),
             algorithm=algorithm,
             logger=logger,
             device = policy.device,
-            reload_buffer=True 
+            reload_buffer=True,
+            
         )
     else:
         raise ValueError(f"Agent class {agent_config.get('agent_class')} not supported")

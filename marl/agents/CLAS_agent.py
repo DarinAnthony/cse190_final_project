@@ -35,6 +35,7 @@ class CLASVAEAgent(BaseMARLAgent):
         num_transitions_per_env: int,
         normalize_observations: bool,
         vae_config: Dict[str, Any],
+        sac_config: Dict[str, Any],
         reload_buffer: bool = False,
         vae_buffer_size: int = 100000,
         vae_batch_size: int = 128,
@@ -74,27 +75,29 @@ class CLASVAEAgent(BaseMARLAgent):
         self.vae_buffer = VAEBuf(capacity=vae_buffer_size)
         self.vae_eval_buffer = VAEBuf(capacity= vae_buffer_size)
         
+        self.sac_config = sac_config
+        
         buffer_path = "saved_buffers/dual_arm_vae_buffer2.pkl"
         if reload_buffer:
             if os.path.exists(buffer_path):
                 if self.env.num_envs > 1:
                     # Use vectorized data collection
                     self.load_vae_buffer(buffer_path)
-                    self._prefill_buffer_vectorized(self.vae_eval_buffer, prefill_size=10000, max_episode_steps=500, num_envs=self.env.num_envs)
+                    self._prefill_buffer_vectorized(self.vae_eval_buffer, prefill_size=self.vae_config["vae_buffer_eval_prefill_size"], max_episode_steps=self.vae_config["max_episode_steps"], num_envs=self.env.num_envs)
                 else:
                     # Use single environment collection
                     self.load_vae_buffer(buffer_path)
-                    self._prefill_buffer_diverse(self.vae_eval_buffer, prefill_size=10000, max_episode_steps=500)
+                    self._prefill_buffer_diverse(self.vae_eval_buffer, prefill_size=self.vae_config["vae_buffer_eval_prefill_size"], max_episode_steps=self.vae_config["max_episode_steps"])
             else:
-                
                 if self.env.num_envs > 1:
                     # Use vectorized data collection
-                    self._prefill_buffer_vectorized(self.vae_buffer, prefill_size=200000, max_episode_steps=500, num_envs=self.env.num_envs)
-                    self._prefill_buffer_vectorized(self.vae_eval_buffer, prefill_size=10000, max_episode_steps=500, num_envs=self.env.num_envs)
+                    self._prefill_buffer_vectorized(self.vae_buffer, prefill_size=self.vae_config["vae_buffer_train_prefill_size"], max_episode_steps=self.vae_config["max_episode_steps"], num_envs=self.env.num_envs)
+                    print("Finished first prefill of VAE buffer")
+                    self._prefill_buffer_vectorized(self.vae_eval_buffer, prefill_size=self.vae_config["vae_buffer_eval_prefill_size"], max_episode_steps=self.vae_config["max_episode_steps"], num_envs=self.env.num_envs)
                 else:
                     # Use single environment collection
-                    self._prefill_buffer_diverse(self.vae_buffer, prefill_size=200000, max_episode_steps=500)
-                    self._prefill_buffer_diverse(self.vae_eval_buffer, prefill_size=10000, max_episode_steps=500)
+                    self._prefill_buffer_diverse(self.vae_buffer, prefill_size=self.vae_config["vae_buffer_train_prefill_size"], max_episode_steps=self.vae_config["max_episode_steps"])
+                    self._prefill_buffer_diverse(self.vae_eval_buffer, prefill_size=self.vae_config["vae_buffer_eval_prefill_size"], max_episode_steps=self.vae_config["max_episode_steps"])
                 
                 # once done, immediately save it to disk
                 self.save_vae_buffer(buffer_path)
@@ -311,21 +314,6 @@ class CLASVAEAgent(BaseMARLAgent):
                 self.logger.info("VAE buffer not ready for training, skipping step")
             return {}
         
-        obs_dicts, actions = self.vae_buffer.sample_batch(self.vae_batch_size)
-            
-        # Convert list of obs_dicts to batched format
-        batched_obs_dict = self._batch_observations(obs_dicts)
-        
-        # Train VAE
-        losses = self.vae.train_step(batched_obs_dict, actions)
-        
-        # Update training counter
-        self.vae_training_steps += 1
-        
-        # Store losses for logging
-        for key, value in losses.items():
-            self.vae_losses[key].append(value)
-        
         try:
             # Sample batch from buffer
             obs_dicts, actions = self.vae_buffer.sample_batch(self.vae_batch_size)
@@ -358,7 +346,7 @@ class CLASVAEAgent(BaseMARLAgent):
             obs_list: List of observation dictionaries
             
         Returns:
-            Dictionary with batched observations
+            Dictionary with batched observations (handles scalar dimensions properly)
         """
         if not obs_list:
             return {}
@@ -368,9 +356,15 @@ class CLASVAEAgent(BaseMARLAgent):
             # Stack observations across batch dimension
             arr = np.stack([obs[key] for obs in obs_list], axis=0)
             
-            if arr.ndim == 3 and arr.shape[1] == 1:
-                arr = arr[:, 0, :]    # now (B, D)
-
+            # Apply the same dimension handling logic as _batch_vectorized_observations
+            if arr.ndim == 1:
+                # Scalar per batch item: (batch_size,) -> (batch_size, 1)
+                # This handles 'angle', 'd', 't' observations
+                arr = arr[:, np.newaxis]
+            elif arr.ndim == 3 and arr.shape[1] == 1:
+                # Remove unnecessary middle dimension: (batch_size, 1, features) -> (batch_size, features)
+                arr = arr[:, 0, :]
+            
             batched_obs[key] = arr
         
         return batched_obs
@@ -423,6 +417,7 @@ class CLASVAEAgent(BaseMARLAgent):
         2) Run exactly `vae_updates` gradient steps on the VAE
         (sampling fresh batches from the filled buffer)
         """
+        vae_updates = self.vae_config.get("vae_updates", vae_updates)
 
         # ------------- Phase 1: prefilling ----------
         # self._prefill_buffer_diverse(self.vae_buffer, prefill_size * 10, max_episode_steps)
@@ -432,6 +427,7 @@ class CLASVAEAgent(BaseMARLAgent):
         hidden_dims_to_test = [128, 256, 512]  # Currently 256
         num_layers_to_test = [2, 3, 4]
 
+        self.train_mode()
         print("now training the VAE with {} updates".format(vae_updates))
         # ------------- Phase 2: VAE updates only ----------
         for update in range(vae_updates):
@@ -475,15 +471,16 @@ class CLASVAEAgent(BaseMARLAgent):
         self.eval_mode()
         
         # SAC config
-        sac_config = {
-            'gamma': 0.99,
-            'tau': 0.005,
-            'alpha': 0.2,
-            'lr': 3e-4,
-            'buffer_size': 1000000,
-            'batch_size': 256,
-            'start_steps': 100000
-        }
+        sac_config = self.sac_config
+        # sac_config = {
+        #     'gamma': 0.99,
+        #     'tau': 0.005,
+        #     'alpha': 0.2,
+        #     'lr': 3e-4,
+        #     'buffer_size': 1000000,
+        #     'batch_size': 256,
+        #     'start_steps': 100000
+        # }
         
         # Train policy
         agent, logs = self.train_clas_policy_vectorized(self.env, self.vae, sac_config, num_episodes=1000)
@@ -899,3 +896,12 @@ class CLASVAEAgent(BaseMARLAgent):
         self.vae.decoder0.train()
         self.vae.decoder1.train()
         self.vae.prior.train()
+        
+        for p in self.vae.encoder.parameters():   # (explicit is better)
+            p.requires_grad = True
+        for p in self.vae.decoder0.parameters():   # (explicit is better)
+            p.requires_grad = True
+        for p in self.vae.decoder1.parameters():   # (explicit is better)
+            p.requires_grad = True
+        for p in self.vae.prior.parameters():   # (explicit is better)
+            p.requires_grad = True

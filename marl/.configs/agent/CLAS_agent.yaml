@@ -10,6 +10,26 @@ agent_0:
     [robot1_proprio-state, 43]
   ]
 
+clas_training:
+  vae_config: {
+                'latent_dim': 8,
+                'hidden_dim': 256,
+                'vae_buffer_train_prefill_size': 200000,
+                'vae_buffer_eval_prefill_size': 20000,
+                'vae_updates': 200000,
+                'max_episode_steps': 500
+            }
+  
+  sac_config: {
+            'gamma': 0.99,
+            'tau': 0.005,
+            'alpha': 0.2,
+            'lr': 3e-4,
+            'buffer_size': 1000000,
+            'batch_size': 256,
+            'start_steps': 100000
+        }
+
 kwargs: 
   normalize_observations: true
   num_transitions_per_env: 1000 #How many transitions to collect per rollout. 

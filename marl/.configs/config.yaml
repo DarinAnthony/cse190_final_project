@@ -12,8 +12,6 @@ experiment:
   seed: 42
   total_timesteps: 1_000_000
 
-
-
 #Custom Hydra run directory
 hydra:
   run:

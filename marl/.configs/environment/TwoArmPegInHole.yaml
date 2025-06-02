@@ -29,7 +29,7 @@ env_kwargs:
   peg_length: 0.13                             # Length of the peg
 
   # Rendering settings
-  has_renderer: false                           # Whether to render in a viewer
+  has_renderer: false                        # Whether to render in a viewer
   has_offscreen_renderer: false                 # Whether to use off-screen rendering
   render_camera: "frontview"                   # Camera to render from (null for default angle) Only applies if has_renderer is true
 
