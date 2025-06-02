@@ -12,9 +12,9 @@ env_kwargs:
   env_configuration: "opposed"                 # How to position robots: 'parallel' (side by side) or 'opposed' (across from each other)
 
   # Controller configuration
-  controller_configs:
-    type: "composite_controller"               # Controller for first robot 
-    controller: "BASIC"
+  # controller_configs:
+  #   type: "composite_controller"               # Controller for first robot 
+  #   controller: "BASIC"
 
 
   use_camera_obs: false                 # Whether to include camera observations for each robot (includes all cameras)

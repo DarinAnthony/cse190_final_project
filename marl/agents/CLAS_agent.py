@@ -417,6 +417,7 @@ class CLASVAEAgent(BaseMARLAgent):
         2) Run exactly `vae_updates` gradient steps on the VAE
         (sampling fresh batches from the filled buffer)
         """
+        
         vae_updates = self.vae_config.get("vae_updates", vae_updates)
 
         # ------------- Phase 1: prefilling ----------
@@ -483,7 +484,7 @@ class CLASVAEAgent(BaseMARLAgent):
         # }
         
         # Train policy
-        agent, logs = self.train_clas_policy_vectorized(self.env, self.vae, sac_config, num_episodes=1000)
+        agent, logs = self.train_clas_policy_vectorized(self.env, self.vae, sac_config, num_episodes=sac_config['num_episodes'])
         
     def train_clas_policy_vectorized(self, env, vae_model, config, num_episodes=1000):
         """Train CLAS policy using SAC"""
@@ -544,12 +545,14 @@ class CLASVAEAgent(BaseMARLAgent):
                 if done.any():
                     obs_dict, infos = env.reset()
                     done = np.array([False] * num_envs)
+                    break
             
         
         pbar.close()
         print(f"Prefilled replay buffer with {len(replay_buffer)} transitions")
         
-                # Training loop
+        pbar = tqdm(total=num_episodes, desc="Training", unit="step")
+        # Training loop
         for episode in range(num_episodes):
             obs_dict, infos = env.reset()
             current_episode_rewards = np.zeros(num_envs)
@@ -598,7 +601,10 @@ class CLASVAEAgent(BaseMARLAgent):
                 avg_reward = np.mean(episode_rewards[-10:])
                 print(f"Ep {episode:4d} | R̄(10)={avg_reward:7.2f}")
                 writer.add_scalar("reward/avg_10", avg_reward, episode)
+            
+            pbar.update(1)
         
+        pbar.close()
         writer.close()
         return agent, {"episode_rewards": episode_rewards, "q1_losses": q1_losses, "q2_losses": q2_losses, "policy_losses": pi_losses, "alpha_losses": alpha_losses}
         

@@ -23,4 +23,10 @@ def test_agent(cfg: DictConfig):
 if __name__ == "__main__":
     logging.getLogger("robosuite").setLevel(logging.ERROR)
     logging.getLogger("robosuite_logs").setLevel(logging.ERROR)
+    
+    # Also suppress the specific robot.py warnings
+    import robosuite
+    robosuite_logger = logging.getLogger("robosuite")
+    robosuite_logger.setLevel(logging.ERROR)
+    
     test_agent()
