@@ -2,14 +2,20 @@ import torch
 import numpy as np
 from typing import Any, Dict, List, Optional, Tuple
 from tqdm.auto import tqdm
-import mujoco
-from mujoco import _functions as mjf
+from torch.utils.tensorboard import SummaryWriter
+import os
+import pickle
 
 from marl.agents.base_marl import BaseMARLAgent
 from marl.policies.base_policy import BasePolicy
 from marl.algorithms.base import BaseAlgorithm
 from marl.storage.VAE_rBuffer import VAEBuf
 from marl.networks.CLAS_vae import CLASVAE  # Assuming CLASVAE is defined in this module
+from marl.networks.CLAS_vae_beta import CLASVAEWithBeta
+
+from marl.algorithms.sac import CLASSAC
+from marl.algorithms.sac import ReplayBuffer
+
 
 class CLASVAEAgent(BaseMARLAgent):
     """
@@ -29,6 +35,7 @@ class CLASVAEAgent(BaseMARLAgent):
         num_transitions_per_env: int,
         normalize_observations: bool,
         vae_config: Dict[str, Any],
+        reload_buffer: bool = False,
         vae_buffer_size: int = 100000,
         vae_batch_size: int = 128,
         vae_train_freq: int = 1,
@@ -67,6 +74,19 @@ class CLASVAEAgent(BaseMARLAgent):
         self.vae_buffer = VAEBuf(capacity=vae_buffer_size)
         self.vae_eval_buffer = VAEBuf(capacity= vae_buffer_size)
         
+        buffer_path = "saved_buffers/dual_arm_vae_buffer.pkl"
+        if reload_buffer:
+            if os.path.exists(buffer_path):
+                self.load_vae_buffer(buffer_path)
+                self._prefill_buffer_diverse(self.vae_eval_buffer, prefill_size=10000, max_episode_steps=500)
+            else:
+                # collect random or scripted data
+                self._prefill_buffer_diverse(self.vae_buffer, prefill_size=100000, max_episode_steps=500)
+                self._prefill_buffer_diverse(self.vae_eval_buffer, prefill_size=10000, max_episode_steps=500)
+                # once done, immediately save it to disk
+                self.save_vae_buffer(buffer_path)
+            
+        
         # Initialize CLAS VAE
         self.vae = CLASVAE(config=vae_config)
         
@@ -80,6 +100,8 @@ class CLASVAEAgent(BaseMARLAgent):
             'recon_loss': [],
             'kl_loss': []
         }
+        
+        self.tb_writer = SummaryWriter(log_dir="runs/CLASVAE_experiment")
 
     def store_transition(self, buffer: VAEBuf, obs_dict: Dict[str, np.ndarray], actions: np.ndarray):
         """
@@ -95,6 +117,54 @@ class CLASVAEAgent(BaseMARLAgent):
         
         # Store in VAE buffer
         buffer.push(obs_dict, actions)
+        
+    def save_vae_buffer(self, path: str):
+        """
+        Save the contents of `self.vae_buffer` to `path` using pickle.
+        We assume `VAEBuf` has an internal list (e.g. `self.storage`) of (obs_dict, action) tuples.
+        """
+            
+        buffer_data = list(self.vae_buffer.buffer)
+
+        # 2. Serialize with pickle (obs_dicts contain numpy arrays, which pickle can handle)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(buffer_data, f)
+
+        if self.logger:
+            self.logger.info(f"Saved VAE buffer with {len(buffer_data)} transitions to '{path}'")
+
+
+    def load_vae_buffer(self, path: str, clear_existing: bool = True):
+        """
+        Load a previously saved buffer from `path`, and repopulate `self.vae_buffer`.
+        
+        Args:
+            path:           Path to the .pkl file created by `save_vae_buffer`.
+            clear_existing: If True, we first clear `self.vae_buffer` before loading.
+        """
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"No file found at '{path}'")
+
+        # 1. Load the raw list of transitions
+        with open(path, "rb") as f:
+            buffer_data = pickle.load(f)
+
+        # 2. Optionally clear the current buffer
+        if clear_existing:
+            capacity = self.vae_buffer.capacity
+            self.vae_buffer = VAEBuf(capacity=capacity)
+
+        # 3. Repopulate the VAEBuf one transition at a time
+        count = 0
+        for trans in buffer_data:
+            # each trans is Transition(obs_dict, action)
+            self.vae_buffer.push(trans.obs_dict, trans.action)
+            count += 1
+
+        if self.logger:
+            self.logger.info(f"Loaded {count} transitions into VAE buffer from '{path}'")
+        
         
     def _prefill_buffer(self,
                         buffer: VAEBuf,
@@ -248,6 +318,7 @@ class CLASVAEAgent(BaseMARLAgent):
         
         return batched_obs
 
+
     def get_latent_actions(self, obs_dict: Dict[str, np.ndarray]) -> torch.Tensor:
         """
         Get latent actions from the VAE prior for coordination.
@@ -288,7 +359,7 @@ class CLASVAEAgent(BaseMARLAgent):
 
     def learn(self,
           prefill_size: int     = 10000,
-          vae_updates:   int     = 100000,
+          vae_updates:   int     = 200000,
           max_episode_steps: int = 500) -> None:
         """
         1) Collect `prefill_size` transitions with a random / scripted controller
@@ -297,8 +368,8 @@ class CLASVAEAgent(BaseMARLAgent):
         """
 
         # ------------- Phase 1: prefilling ----------
-        self._prefill_buffer_diverse(self.vae_buffer, prefill_size * 10, max_episode_steps)
-        self._prefill_buffer_diverse(self.vae_eval_buffer, prefill_size, max_episode_steps)
+        # self._prefill_buffer_diverse(self.vae_buffer, prefill_size * 10, max_episode_steps)
+        # self._prefill_buffer_diverse(self.vae_eval_buffer, prefill_size, max_episode_steps)
         
         latent_dims_to_test = [4, 6, 8, 12, 16]
         hidden_dims_to_test = [128, 256, 512]  # Currently 256
@@ -315,19 +386,207 @@ class CLASVAEAgent(BaseMARLAgent):
                     f"| recon: {losses.get('recon_loss', 0):.4f} "
                     f"| KL:    {losses.get('kl_loss', 0):.4f}"
                 )
+                self.eval_mode()
+                eval_dict = self.evaluate_vae(self.vae, self.vae_eval_buffer, 50)
+                self.tb_writer.add_scalar("VAE/recon_eval_loss", eval_dict["val_recon_loss"], update)
+                self.tb_writer.add_scalar("VAE/kl_eval_loss", eval_dict["val_kl"], update)
+                self.tb_writer.add_scalar("VAE/mse_eval_loss", eval_dict["val_mse"], update)
+                self.logger.info(
+                    f"VAE evaluation: "
+                    f"recon_loss={eval_dict.get('val_recon_loss', 0):.4f}, "
+                    f"kl_loss={eval_dict.get('val_kl', 0):.4f}, "
+                    f"mse={eval_dict.get('val_mse', 0):.4f}"
+                )
+                self.train_mode()
                 
-        self.eval_mode()
-        eval_dict = self.evaluate_vae(self.vae, self.vae_eval_buffer, 50)
-        if self.logger:
-            self.logger.info(
-                f"VAE evaluation: "
-                f"recon_loss={eval_dict.get('val_recon_loss', 0):.4f}, "
-                f"kl_loss={eval_dict.get('val_kl', 0):.4f}, "
-                f"mse={eval_dict.get('val_mse', 0):.4f}"
-            )
+            self.tb_writer.add_scalar("VAE/total_loss", losses["total_loss"], update)
+            self.tb_writer.add_scalar("VAE/recon_loss", losses["recon_loss"], update)
+            self.tb_writer.add_scalar("VAE/kl_loss", losses["kl_loss"], update)
+                
+        self.tb_writer.close()
+        # self.eval_mode()
+        # eval_dict = self.evaluate_vae(self.vae, self.vae_eval_buffer, 50)
+        # if self.logger:
+        #     self.logger.info(
+        #         f"VAE evaluation: "
+        #         f"recon_loss={eval_dict.get('val_recon_loss', 0):.4f}, "
+        #         f"kl_loss={eval_dict.get('val_kl', 0):.4f}, "
+        #         f"mse={eval_dict.get('val_mse', 0):.4f}"
+        #     )
 
         # ------------- save weights for later RL ----------
-        self.save_vae("clas_vae_prefilled.pt")
+        self.save_vae("clas_vae_prefilled_beta.pt")
+        
+    def learn_SAC_policy(self):
+        # Load VAE
+        config = {
+            'latent_dim': 16,
+            'hidden_dim': 256
+        }
+        self.load_vae("clas_vae_prefilled.pt")
+        self.eval_mode()
+        
+        # SAC config
+        sac_config = {
+            'gamma': 0.99,
+            'tau': 0.005,
+            'alpha': 0.2,
+            'lr': 3e-4,
+            'buffer_size': 1000000,
+            'batch_size': 256,
+            'start_steps': 100000
+        }
+        
+        # Train policy
+        agent, logs = self.train_clas_policy(self.env, self.vae, sac_config, num_episodes=1000)
+        
+        
+    
+    def train_clas_policy(self, env, vae_model, config, num_episodes=1000):
+        """Train CLAS policy using SAC"""
+        
+        # instantiate metrics
+        writer = SummaryWriter("runs/clas_sac")
+        best_reward = -float("inf")               # ← fix undefined var
+        episode_rewards, q1_losses, q2_losses, pi_losses, alpha_losses = [], [], [], [], []
+        
+        # Initialize SAC agent
+        obs_dim = vae_model.full_obs_dim
+        latent_dim = vae_model.latent_dim
+        action_dim = vae_model.total_action_dim
+        
+        agent = CLASSAC(vae_model, obs_dim, latent_dim, config)
+        
+        # Initialize replay buffer
+        replay_buffer = ReplayBuffer(
+            capacity=config.get('buffer_size', 1000000),
+            obs_dim=obs_dim,
+            latent_dim=latent_dim,
+            device=agent.device
+        )
+        
+        
+        pbar = tqdm(total=config.get('start_steps', 100000), desc="Prefill", unit="step")
+        while len(replay_buffer) < config.get('start_steps', 100000):
+            obs_dict, infos = env.reset()
+
+            episode_reward = 0
+            done = False
+            
+            while not done:
+                batched_obs_dict = agent._batch_one_observation(obs_dict)
+                action, latent_action = agent.select_action(obs_dict, evaluate=False)
+                
+                # Environment step
+                next_obs_dict, reward, done, truncated, info = env.step(action)
+                
+                # Convert latent_action back to tensor for storage
+                latent_action_tensor = torch.as_tensor(latent_action, dtype=torch.float32, device=agent.device)
+                
+                # Convert list of next_obs_dict to batched format
+                batched_next_obs_dict = agent._batch_one_observation(next_obs_dict)
+                
+                _, _, _, full_obs      = agent.vae.parse_observation(batched_obs_dict)
+                _, _, _, next_full_obs = agent.vae.parse_observation(batched_next_obs_dict)
+                
+                # Store transition
+                reward_scalar = float(reward) if hasattr(reward, 'item') else reward
+                done_scalar = float(done) if hasattr(done, 'item') else done
+                
+                replay_buffer.push(full_obs, 
+                                latent_action_tensor, 
+                                torch.tensor([reward_scalar], device=agent.device, dtype=torch.float32), 
+                                next_full_obs, 
+                                torch.tensor([done_scalar], device=agent.device, dtype=torch.float32))
+                
+                pbar.update(1)
+                
+                obs_dict = next_obs_dict
+                episode_reward += reward
+        
+        pbar.close()
+        print(f"Prefilled replay buffer with {len(replay_buffer)} transitions")
+        
+        # Training loop
+        
+        for episode in range(num_episodes):
+            obs_dict, infos = env.reset()
+
+            episode_reward = 0
+            done = False
+            
+            while not done:
+                batched_obs_dict = agent._batch_one_observation(obs_dict)
+                action, latent_action = agent.select_action(obs_dict, evaluate=False)
+                
+                # Environment step
+                next_obs_dict, reward, done, truncated, info = env.step(action)
+                
+                # Convert latent_action back to tensor for storage
+                latent_action_tensor = torch.as_tensor(latent_action, dtype=torch.float32, device=agent.device)
+                
+                # Convert list of next_obs_dict to batched format
+                batched_next_obs_dict = agent._batch_one_observation(next_obs_dict)
+                
+                _, _, _, full_obs      = agent.vae.parse_observation(batched_obs_dict)
+                _, _, _, next_full_obs = agent.vae.parse_observation(batched_next_obs_dict)
+                
+                # Store transition
+                reward_scalar = float(reward) if hasattr(reward, 'item') else reward
+                done_scalar = float(done) if hasattr(done, 'item') else done
+                
+                replay_buffer.push(full_obs, 
+                                latent_action_tensor, 
+                                torch.tensor([reward_scalar], device=agent.device, dtype=torch.float32), 
+                                next_full_obs, 
+                                torch.tensor([done_scalar], device=agent.device, dtype=torch.float32))
+                
+                # Train
+                if len(replay_buffer) > config.get('start_steps', 100000):
+                    loss_dict = agent.train_step(replay_buffer, batch_size=config.get('batch_size', 256))
+                    
+                    if loss_dict is not None:
+                        q1_losses.append(loss_dict['q1_loss'])
+                        q2_losses.append(loss_dict['q2_loss'])
+                        pi_losses.append(loss_dict['policy_loss'])
+                        alpha_losses.append(loss_dict['alpha_loss'])
+                        # TensorBoard (step = env‐steps, i.e. len(replay_buffer))
+                        step = len(replay_buffer)
+                        writer.add_scalar("loss/q1",    loss_dict['q1_loss'],    step)
+                        writer.add_scalar("loss/q2",    loss_dict['q2_loss'],    step)
+                        writer.add_scalar("loss/policy",loss_dict['policy_loss'],step)
+                        writer.add_scalar("loss/alpha", loss_dict['alpha_loss'], step)
+                    
+                obs_dict = next_obs_dict
+                episode_reward += reward
+                
+            episode_rewards.append(episode_reward)
+            
+            if episode % 10 == 0:
+                avg_reward = np.mean(episode_rewards[-10:])
+                mean_q1    = np.mean(q1_losses[-100:]) if q1_losses else 0.0
+                mean_q2    = np.mean(q2_losses[-100:]) if q2_losses else 0.0
+                mean_pi    = np.mean(pi_losses[-100:]) if pi_losses else 0.0
+                mean_alp   = np.mean(alpha_losses[-100:]) if alpha_losses else 0.0
+                print(f"Ep {episode:4d} | R̄(10)={avg_reward:7.2f} "
+                    f"| q1={mean_q1:6.3f} q2={mean_q2:6.3f} "
+                    f"| π={mean_pi:6.3f} α_loss={mean_alp:6.3f}")
+                # TensorBoard
+                writer.add_scalar("reward/avg_10", avg_reward, episode)
+            
+            # Save every 50 episodes or whenever you beat your best score
+            if episode % 50 == 0 or avg_reward > best_reward:
+                best_reward = max(best_reward, avg_reward)
+                ckpt_name   = f"clas_sac_ep{episode:05d}.pt"
+                agent.save_checkpoint(ckpt_name, episode, avg_reward)
+
+        writer.close()
+        
+        return agent, {"episode_rewards": episode_rewards, 
+                       "q1_losses": q1_losses, 
+                       "q2_losses": q2_losses, 
+                       "policy_losses": pi_losses, 
+                       "alpha_losses": alpha_losses}
 
 
 
@@ -382,6 +641,15 @@ class CLASVAEAgent(BaseMARLAgent):
         self.vae.decoder0.eval()
         self.vae.decoder1.eval()
         self.vae.prior.eval()
+        
+        for p in self.vae.encoder.parameters():   # (explicit is better)
+            p.requires_grad = False
+        for p in self.vae.decoder0.parameters():   # (explicit is better)
+            p.requires_grad = False
+        for p in self.vae.decoder1.parameters():   # (explicit is better)
+            p.requires_grad = False
+        for p in self.vae.prior.parameters():   # (explicit is better)
+            p.requires_grad = False
         
     def evaluate_vae(
         self,
