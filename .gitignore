@@ -5,3 +5,5 @@ __pycache__/
 results/
 
 .pytest_cache/
+saved_buffers/dual_arm_vae_buffer.pkl
+saved_buffers/ # Or ignore the entire directory
