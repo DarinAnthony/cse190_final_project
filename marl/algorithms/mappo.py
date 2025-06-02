@@ -107,9 +107,19 @@ class MAPPO(PPO):
     def update(self) -> Dict[str, Any]:
         """ Update all agents """
         all_loss_dicts = {}
+        update_critic = False
         for actor_id in self.actors:
             critic_id = self.actor_critic_mapping[actor_id]
-            loss_dict = self._update_single_agent(actor_id, critic_id)
-            all_loss_dicts[actor_id] = loss_dict
+            surrogate_loss, value_loss, entropy_loss = self._update_single_agent(actor_id, critic_id, update_critic)
+            all_loss_dicts[actor_id] = {
+                'surrogate_loss': surrogate_loss,
+
+            }
+            update_critic = True
+        all_loss_dicts = {
+            "entropy_loss": entropy_loss,
+            "value_loss": value_loss
+        }
         return all_loss_dicts
         
+    

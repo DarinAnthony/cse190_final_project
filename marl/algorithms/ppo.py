@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Tuple
 
 import torch
 import torch.nn as nn
@@ -202,69 +202,73 @@ class PPO(BaseAlgorithm):
       all_loss_dicts[actor_id] = loss_dict
     return all_loss_dicts
 
-  def _update_single_agent(self, actor_id: str, critic_id: str) -> Dict[str, float]:
-      """Update a single agent's parameters"""
-      mean_value_loss = 0
-      mean_surrogate_loss = 0
-      mean_entropy = 0
+  def _update_single_agent(self, actor_id: str, critic_id: str, update_critic: bool = True) -> Tuple[float, float, float]:
+    """Update a single agent's parameters"""
+    mean_value_loss = 0
+    mean_surrogate_loss = 0
+    mean_entropy = 0
 
-      generator = self.storage[actor_id].mini_batch_generator(
-          self.num_mini_batches[actor_id], 
-          self.num_learning_epochs[actor_id]
-      )
+    generator = self.storage[actor_id].mini_batch_generator(
+        self.num_mini_batches[actor_id], 
+        self.num_learning_epochs[actor_id]
+    )
 
-      for (
-          actor_obs_batch,
-          critic_obs_batch,
-          actions_batch,
-          target_values_batch,
-          advantages_batch,
-          returns_batch,
-          old_actions_log_prob_batch,
-          old_mu_batch,
-          old_sigma_batch,
-          ) in generator:
-        original_batch_size = actor_obs_batch.shape[0]
+    for (
+        actor_obs_batch,
+        critic_obs_batch,
+        actions_batch,
+        target_values_batch,
+        advantages_batch,
+        returns_batch,
+        old_actions_log_prob_batch,
+        old_mu_batch,
+        old_sigma_batch,
+        ) in generator:
+      original_batch_size = actor_obs_batch.shape[0]
 
-        if self.normalize_advantage_per_mini_batch:
-          with torch.no_grad():
-            advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
-          
-        self.policy.act(actor_obs_batch, agent_id=actor_id)
-        actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch, agent_id=actor_id)
+      if self.normalize_advantage_per_mini_batch:
+        with torch.no_grad():
+          advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
+        
+      self.policy.act(actor_obs_batch, agent_id=actor_id)
+      actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch, agent_id=actor_id)
 
+      # Only compute value if we're updating the critic
+      if update_critic:
         value_batch = self.policy.evaluate(critic_obs_batch, agent_id=critic_id)
 
-        mu_batch = self.policy.get_action_mean(actor_id)[:original_batch_size]
-        sigma_batch = self.policy.get_action_std(actor_id)[:original_batch_size]
-        entropy_batch = self.policy.get_entropy(actor_id)[:original_batch_size]
+      mu_batch = self.policy.get_action_mean(actor_id)[:original_batch_size]
+      sigma_batch = self.policy.get_action_std(actor_id)[:original_batch_size]
+      entropy_batch = self.policy.get_entropy(actor_id)[:original_batch_size]
 
-        if self.desired_kl[actor_id] is not None and self.schedule[actor_id] == "adaptive":
-          with torch.inference_mode():
-            kl = torch.sum(
-                torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
-                + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch))
-                / (2.0 * torch.square(sigma_batch))
-                - 0.5,
-                axis=-1,
-            )
-            kl_mean = torch.mean(kl)
+      if self.desired_kl[actor_id] is not None and self.schedule[actor_id] == "adaptive":
+        with torch.inference_mode():
+          kl = torch.sum(
+              torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
+              + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch))
+              / (2.0 * torch.square(sigma_batch))
+              - 0.5,
+              axis=-1,
+          )
+          kl_mean = torch.mean(kl)
 
-            if kl_mean > self.desired_kl[actor_id] * 2.0:
-                self.learning_rate[actor_id] = max(1e-5, self.learning_rate[actor_id] / 1.5)
-            elif kl_mean < self.desired_kl[actor_id] / 2.0 and kl_mean > 0.0:
-                self.learning_rate[actor_id] = min(1e-2, self.learning_rate[actor_id] * 1.5)
+          if kl_mean > self.desired_kl[actor_id] * 2.0:
+              self.learning_rate[actor_id] = max(1e-5, self.learning_rate[actor_id] / 1.5)
+          elif kl_mean < self.desired_kl[actor_id] / 2.0 and kl_mean > 0.0:
+              self.learning_rate[actor_id] = min(1e-2, self.learning_rate[actor_id] * 1.5)
 
-            for param_group in self.optimizers[actor_id].param_groups:
-              param_group["lr"] = self.learning_rate[actor_id]
+          for param_group in self.optimizers[actor_id].param_groups:
+            param_group["lr"] = self.learning_rate[actor_id]
 
-        ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
-        surrogate = -torch.squeeze(advantages_batch) * ratio
-        surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(
-          ratio, 1.0 - self.clip_param[actor_id], 1.0 + self.clip_param[actor_id]
-        )
-        surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
+      ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
+      surrogate = -torch.squeeze(advantages_batch) * ratio
+      surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(
+        ratio, 1.0 - self.clip_param[actor_id], 1.0 + self.clip_param[actor_id]
+      )
+      surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
+      # Compute value loss only if updating critic
+      if update_critic:
         if self.use_clipped_value_loss:
             value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(
                 -self.clip_param[actor_id], self.clip_param[actor_id]
@@ -274,56 +278,71 @@ class PPO(BaseAlgorithm):
             value_loss = torch.max(value_losses, value_losses_clipped).mean()
         else:
             value_loss = (returns_batch - value_batch).pow(2).mean()
+      else:
+        value_loss = torch.tensor(0.0)  # Zero loss when not updating critic
 
-        # Separate the loss components
-        actor_loss = surrogate_loss - self.entropy_coef[actor_id] * entropy_batch.mean()
-        critic_loss = self.value_loss_coef[actor_id] * value_loss
-
-        # If using same optimizer for both actor and critic
-        if self.optimizers[actor_id] is self.optimizers[critic_id]:
-            self.optimizers[actor_id].zero_grad()
-            total_loss = actor_loss + critic_loss
-            total_loss.backward()
-            # Clip gradients for both actor and critic parameters
-            if actor_id == critic_id:
-              nn.utils.clip_grad_norm_(
-                  self.policy.parameters(agent_id=actor_id), 
-                  self.max_grad_norm[actor_id]
-              )
-            else:
-              nn.utils.clip_grad_norm_(
-                  itertools.chain(self.policy.parameters(agent_id=actor_id), self.policy.parameters(agent_id=critic_id)), 
-                  self.max_grad_norm[actor_id]
-              )
-            self.optimizers[actor_id].step()
-        else: #Different optimizers for actor and critic
-            # Update actor
-            self.optimizers[actor_id].zero_grad()
-            actor_loss.backward(retain_graph=True)  # retain_graph=True is important here
-            nn.utils.clip_grad_norm_(self.policy.parameters(agent_id=actor_id), self.max_grad_norm[actor_id])
-            self.optimizers[actor_id].step()
-
-            # Update critic
-            self.optimizers[critic_id].zero_grad()
-            critic_loss.backward()
-            nn.utils.clip_grad_norm_(self.policy.parameters(agent_id=critic_id), self.max_grad_norm[critic_id])
-            self.optimizers[critic_id].step()
-
-        mean_value_loss += value_loss.item()
-        mean_surrogate_loss += surrogate_loss.item()
-        mean_entropy += entropy_batch.mean().item()
+      # Actor loss (always computed)
+      actor_loss = surrogate_loss - self.entropy_coef[actor_id] * entropy_batch.mean()
       
-      num_updates = self.num_learning_epochs[actor_id] * self.num_mini_batches[actor_id]
-      mean_value_loss /= num_updates
-      mean_surrogate_loss /= num_updates
-      mean_entropy /= num_updates
+      # Critic loss (only computed when updating critic)
+      critic_loss = self.value_loss_coef[actor_id] * value_loss if update_critic else torch.tensor(0.0)
 
-      self.storage[actor_id].clear()
+      # Handle optimizer updates based on whether critic is being updated
+      if self.optimizers[actor_id] is self.optimizers[critic_id]:
+        # Same optimizer for both actor and critic
+        self.optimizers[actor_id].zero_grad()
+        
+        if update_critic:
+          total_loss = actor_loss + critic_loss
+        else:
+          total_loss = actor_loss
+          
+        total_loss.backward()
+        
+        # Clip gradients
+        if update_critic:
+          if actor_id == critic_id:
+            nn.utils.clip_grad_norm_(
+                self.policy.parameters(agent_id=actor_id), 
+                self.max_grad_norm[actor_id]
+            )
+          else:
+            nn.utils.clip_grad_norm_(
+                itertools.chain(self.policy.parameters(agent_id=actor_id), self.policy.parameters(agent_id=critic_id)), 
+                self.max_grad_norm[actor_id]
+            )
+        else:
+          # Only clip actor gradients
+          nn.utils.clip_grad_norm_(
+              self.policy.parameters(agent_id=actor_id), 
+              self.max_grad_norm[actor_id]
+          )
+        
+        self.optimizers[actor_id].step()
+      else:
+        # Different optimizers for actor and critic
+        # Always update actor
+        self.optimizers[actor_id].zero_grad()
+        actor_loss.backward(retain_graph=update_critic)  # retain_graph only if we need to update critic too
+        nn.utils.clip_grad_norm_(self.policy.parameters(agent_id=actor_id), self.max_grad_norm[actor_id])
+        self.optimizers[actor_id].step()
 
-      loss_dict = {
-        "value_loss": mean_value_loss,
-        "surrogate_loss": mean_surrogate_loss,
-        "entropy": mean_entropy,
-      }
+        # Only update critic if requested
+        if update_critic:
+          self.optimizers[critic_id].zero_grad()
+          critic_loss.backward()
+          nn.utils.clip_grad_norm_(self.policy.parameters(agent_id=critic_id), self.max_grad_norm[critic_id])
+          self.optimizers[critic_id].step()
 
-      return loss_dict
+      mean_value_loss += value_loss.item()
+      mean_surrogate_loss += surrogate_loss.item()
+      mean_entropy += entropy_batch.mean().item()
+    
+    num_updates = self.num_learning_epochs[actor_id] * self.num_mini_batches[actor_id]
+    mean_value_loss /= num_updates
+    mean_surrogate_loss /= num_updates
+    mean_entropy /= num_updates
+
+    self.storage[actor_id].clear()
+
+    return surrogate_loss.item(), value_loss.item(), mean_entropy
