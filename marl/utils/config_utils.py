@@ -265,7 +265,7 @@ def instantiate_agent(agent_config: DictConfig, env: Any, policy: MultiAgentPoli
             num_transitions_per_env=num_transitions_per_env,
             normalize_observations=normalize_observations,
             vae_config = {
-                'latent_dim': 16,
+                'latent_dim': 8,
                 'hidden_dim': 256
             },
             algorithm=algorithm,

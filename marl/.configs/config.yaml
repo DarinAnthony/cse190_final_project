@@ -1,8 +1,8 @@
 defaults:
   - _self_
-  - environment: TwoArmTransport
+  - environment: TwoArmPegInHole
   - policy: TwoSActorCritic
-  - agent: MultiAgent
+  - agent: CLAS_agent
   - algorithm: PPO
 
 seed: 0

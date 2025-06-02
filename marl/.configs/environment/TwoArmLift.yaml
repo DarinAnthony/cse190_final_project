@@ -24,7 +24,7 @@ env_kwargs:
   table_friction: [1.0, 0.005, 0.0001]         # Friction parameters for the table
 
   # Observation settings
-  use_camera_obs: true                         # Include camera observations
+  use_camera_obs: false                         # Include camera observations
   use_object_obs: true                         # Include object information in observation
 
   # Reward settings
@@ -33,7 +33,7 @@ env_kwargs:
 
   # Rendering settings
   has_renderer: true                           # Whether to render in a viewer
-  has_offscreen_renderer: true                 # Whether to use off-screen rendering
+  has_offscreen_renderer: false                 # Whether to use off-screen rendering
   render_camera: "frontview"                   # Camera to render from (null for default angle)
   render_collision_mesh: false                 # Don't render collision meshes
   render_visual_mesh: true                     # Render visual meshes

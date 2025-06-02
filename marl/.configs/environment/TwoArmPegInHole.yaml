@@ -17,7 +17,7 @@ env_kwargs:
     controller: "BASIC"
 
 
-  use_camera_obs: [true, true]                 # Whether to include camera observations for each robot (includes all cameras)
+  use_camera_obs: false                 # Whether to include camera observations for each robot (includes all cameras)
   use_object_obs: true                         # Whether to include object information in the observation
 
   # Reward settings
@@ -29,8 +29,8 @@ env_kwargs:
   peg_length: 0.13                             # Length of the peg
 
   # Rendering settings
-  has_renderer: true                           # Whether to render in a viewer
-  has_offscreen_renderer: true                 # Whether to use off-screen rendering
+  has_renderer: false                           # Whether to render in a viewer
+  has_offscreen_renderer: false                 # Whether to use off-screen rendering
   render_camera: "frontview"                   # Camera to render from (null for default angle) Only applies if has_renderer is true
 
   # Camera settings
