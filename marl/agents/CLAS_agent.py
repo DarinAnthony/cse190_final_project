@@ -577,7 +577,7 @@ class CLASVAEAgent(BaseMARLAgent):
             # Save every 50 episodes or whenever you beat your best score
             if episode % 50 == 0 or avg_reward > best_reward:
                 best_reward = max(best_reward, avg_reward)
-                ckpt_name   = f"clas_sac_ep{episode:05d}.pt"
+                ckpt_name   = f"/sac_weights/clas_sac_ep{episode:05d}.pt"
                 agent.save_checkpoint(ckpt_name, episode, avg_reward)
 
         writer.close()
