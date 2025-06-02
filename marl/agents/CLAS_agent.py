@@ -77,7 +77,7 @@ class CLASVAEAgent(BaseMARLAgent):
         
         self.sac_config = sac_config
         
-        buffer_path = "saved_buffers/dual_arm_vae_buffer2.pkl"
+        buffer_path = "saved_buffers/dual_arm_vae_buffer3.pkl"
         if reload_buffer:
             if os.path.exists(buffer_path):
                 if self.env.num_envs > 1:
