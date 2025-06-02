@@ -1,6 +1,6 @@
 id: "TwoArmPegInHole"
 type: "gym:cpu"
-num_envs: 1
+num_envs: 6
 seed: 0
 # record_video_path: None #If not none, ensure has_renderer is true
 

@@ -270,7 +270,8 @@ def instantiate_agent(agent_config: DictConfig, env: Any, policy: MultiAgentPoli
             },
             algorithm=algorithm,
             logger=logger,
-            device = policy.device
+            device = policy.device,
+            reload_buffer=True 
         )
     else:
         raise ValueError(f"Agent class {agent_config.get('agent_class')} not supported")

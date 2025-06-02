@@ -74,15 +74,28 @@ class CLASVAEAgent(BaseMARLAgent):
         self.vae_buffer = VAEBuf(capacity=vae_buffer_size)
         self.vae_eval_buffer = VAEBuf(capacity= vae_buffer_size)
         
-        buffer_path = "saved_buffers/dual_arm_vae_buffer.pkl"
+        buffer_path = "saved_buffers/dual_arm_vae_buffer2.pkl"
         if reload_buffer:
             if os.path.exists(buffer_path):
-                self.load_vae_buffer(buffer_path)
-                self._prefill_buffer_diverse(self.vae_eval_buffer, prefill_size=10000, max_episode_steps=500)
+                if self.env.num_envs > 1:
+                    # Use vectorized data collection
+                    self.load_vae_buffer(buffer_path)
+                    self._prefill_buffer_vectorized(self.vae_eval_buffer, prefill_size=10000, max_episode_steps=500, num_envs=self.env.num_envs)
+                else:
+                    # Use single environment collection
+                    self.load_vae_buffer(buffer_path)
+                    self._prefill_buffer_diverse(self.vae_eval_buffer, prefill_size=10000, max_episode_steps=500)
             else:
-                # collect random or scripted data
-                self._prefill_buffer_diverse(self.vae_buffer, prefill_size=100000, max_episode_steps=500)
-                self._prefill_buffer_diverse(self.vae_eval_buffer, prefill_size=10000, max_episode_steps=500)
+                
+                if self.env.num_envs > 1:
+                    # Use vectorized data collection
+                    self._prefill_buffer_vectorized(self.vae_buffer, prefill_size=200000, max_episode_steps=500, num_envs=self.env.num_envs)
+                    self._prefill_buffer_vectorized(self.vae_eval_buffer, prefill_size=10000, max_episode_steps=500, num_envs=self.env.num_envs)
+                else:
+                    # Use single environment collection
+                    self._prefill_buffer_diverse(self.vae_buffer, prefill_size=200000, max_episode_steps=500)
+                    self._prefill_buffer_diverse(self.vae_eval_buffer, prefill_size=10000, max_episode_steps=500)
+                
                 # once done, immediately save it to disk
                 self.save_vae_buffer(buffer_path)
             
@@ -117,6 +130,50 @@ class CLASVAEAgent(BaseMARLAgent):
         
         # Store in VAE buffer
         buffer.push(obs_dict, actions)
+        
+    def _prefill_buffer_vectorized(self, buffer: VAEBuf, prefill_size: int, max_episode_steps: int, num_envs: int):
+        """Collect VAE data using vectorized environments"""
+        
+        strategies = [
+            lambda size: np.random.uniform(-1, 1, (num_envs, 12)),  # Random for all envs
+            lambda size: np.random.normal(0, 0.3, (num_envs, 12)),  # Gaussian for all envs
+            lambda size: np.concatenate([np.random.uniform(-1, 1, (num_envs, 6)), np.zeros((num_envs, 6))], axis=1),  # One arm
+            lambda size: np.concatenate([np.zeros((num_envs, 6)), np.random.uniform(-1, 1, (num_envs, 6))], axis=1),  # Other arm
+        ]
+        
+        pbar = tqdm(total=prefill_size, desc="Vectorized Prefill", unit="step")
+        
+        while len(buffer) < prefill_size:
+            obs_dict, _ = self.env.reset()
+            strategy = np.random.choice(strategies)
+            
+            for step in range(max_episode_steps):
+                # Generate actions for all environments
+                actions = strategy(num_envs)
+                actions = np.clip(actions, -1, 1)
+                
+                next_obs, _, dones, _, _ = self.env.step(actions)
+                
+                # Store transitions from all environments
+                for env_idx in range(num_envs):
+                    single_obs = {k: v[env_idx] for k, v in obs_dict.items()}
+                    single_action = actions[env_idx]
+                    self.store_transition(buffer, single_obs, single_action)
+                    pbar.update(1)
+                    
+                    if len(buffer) >= prefill_size:
+                        break
+                
+                obs_dict = next_obs
+                if dones.any() or step >= max_episode_steps:
+                    break
+                
+                if len(buffer) >= prefill_size:
+                    break
+        
+        pbar.close()
+        if self.logger:
+            self.logger.info(f"Vectorized prefill done with {num_envs} environments ✓")
         
     def save_vae_buffer(self, path: str):
         """
@@ -404,15 +461,6 @@ class CLASVAEAgent(BaseMARLAgent):
             self.tb_writer.add_scalar("VAE/kl_loss", losses["kl_loss"], update)
                 
         self.tb_writer.close()
-        # self.eval_mode()
-        # eval_dict = self.evaluate_vae(self.vae, self.vae_eval_buffer, 50)
-        # if self.logger:
-        #     self.logger.info(
-        #         f"VAE evaluation: "
-        #         f"recon_loss={eval_dict.get('val_recon_loss', 0):.4f}, "
-        #         f"kl_loss={eval_dict.get('val_kl', 0):.4f}, "
-        #         f"mse={eval_dict.get('val_mse', 0):.4f}"
-        #     )
 
         # ------------- save weights for later RL ----------
         self.save_vae("clas_vae_prefilled_beta.pt")
@@ -438,8 +486,124 @@ class CLASVAEAgent(BaseMARLAgent):
         }
         
         # Train policy
-        agent, logs = self.train_clas_policy(self.env, self.vae, sac_config, num_episodes=1000)
+        agent, logs = self.train_clas_policy_vectorized(self.env, self.vae, sac_config, num_episodes=1000)
         
+    def train_clas_policy_vectorized(self, env, vae_model, config, num_episodes=1000):
+        """Train CLAS policy using SAC"""
+        
+        num_envs = env.num_envs
+        
+        # instantiate metrics
+        writer = SummaryWriter("runs/clas_sac")
+        best_reward = -float("inf")
+        episode_rewards, q1_losses, q2_losses, pi_losses, alpha_losses = [], [], [], [], []
+        
+        # Initialize SAC agent
+        obs_dim = vae_model.full_obs_dim
+        latent_dim = vae_model.latent_dim
+        action_dim = vae_model.total_action_dim
+        
+        agent = CLASSAC(vae_model, obs_dim, latent_dim, config)
+        
+        # Initialize replay buffer
+        replay_buffer = ReplayBuffer(
+            capacity=config.get('buffer_size', 1000000),
+            obs_dim=obs_dim,
+            latent_dim=latent_dim,
+            device=agent.device
+        )
+        
+        pbar = tqdm(total=config.get('start_steps', 100000), desc="Prefill", unit="step")
+        while len(replay_buffer) < config.get('start_steps', 100000):
+            obs_dict, infos = env.reset()
+            done = np.array([False] * num_envs)
+        
+            while not done.all():
+                # Process ALL environments simultaneously
+                batched_obs_dict = agent._batch_vectorized_observations(obs_dict, num_envs=num_envs)
+                
+                # Get actions for all 4 environments at once
+                actions_batch, latent_actions_batch = agent.select_action_batch(batched_obs_dict, evaluate=False)
+                
+                # Step all environments simultaneously
+                next_obs_dict, rewards, dones, _, _ = env.step(actions_batch)
+                
+                # Store transitions from ALL environments in batch
+                agent.store_vectorized_transitions(
+                    replay_buffer, 
+                    obs_dict, 
+                    next_obs_dict, 
+                    actions_batch, 
+                    latent_actions_batch, 
+                    rewards, 
+                    dones,
+                    num_envs=num_envs
+                )
+                
+                pbar.update(num_envs)  # Update by 4 since we processed 4 environments
+                obs_dict = next_obs_dict
+                done = dones
+                
+                if done.any():
+                    obs_dict, infos = env.reset()
+                    done = np.array([False] * num_envs)
+            
+        
+        pbar.close()
+        print(f"Prefilled replay buffer with {len(replay_buffer)} transitions")
+        
+                # Training loop
+        for episode in range(num_episodes):
+            obs_dict, infos = env.reset()
+            current_episode_rewards = np.zeros(num_envs)
+            done = np.array([False] * num_envs)
+            
+            while not done.all():
+                # Use the SAME batch processing as prefill phase
+                batched_obs_dict = agent._batch_vectorized_observations(obs_dict, num_envs=num_envs)
+                
+                # Get actions for all 4 environments at once (1 GPU call instead of 4)
+                actions_batch, latent_actions_batch = agent.select_action_batch(batched_obs_dict, evaluate=False)
+                
+                # Step all environments simultaneously (already parallelized on CPU)
+                next_obs_dict, rewards, dones, _, _ = env.step(actions_batch)
+                
+                # Store transitions from ALL environments efficiently
+                agent.store_vectorized_transitions(
+                    replay_buffer, 
+                    obs_dict, 
+                    next_obs_dict, 
+                    actions_batch, 
+                    latent_actions_batch, 
+                    rewards, 
+                    dones,
+                    num_envs=num_envs
+                )
+                
+                # Train after storing
+                if len(replay_buffer) > config.get('start_steps', 100000):
+                    loss_dict = agent.train_step(replay_buffer, batch_size=config.get('batch_size', 256))
+                    if loss_dict is not None:
+                        q1_losses.append(loss_dict['q1_loss'])
+                        q2_losses.append(loss_dict['q2_loss'])
+                        pi_losses.append(loss_dict['policy_loss'])
+                        alpha_losses.append(loss_dict['alpha_loss'])
+                
+                current_episode_rewards += rewards
+                obs_dict = next_obs_dict
+                done = dones
+            
+            # Log average reward across all environments
+            avg_episode_reward = np.mean(current_episode_rewards)
+            episode_rewards.append(avg_episode_reward)
+            
+            if episode % 10 == 0:
+                avg_reward = np.mean(episode_rewards[-10:])
+                print(f"Ep {episode:4d} | R̄(10)={avg_reward:7.2f}")
+                writer.add_scalar("reward/avg_10", avg_reward, episode)
+        
+        writer.close()
+        return agent, {"episode_rewards": episode_rewards, "q1_losses": q1_losses, "q2_losses": q2_losses, "policy_losses": pi_losses, "alpha_losses": alpha_losses}
         
     
     def train_clas_policy(self, env, vae_model, config, num_episodes=1000):
@@ -475,6 +639,8 @@ class CLASVAEAgent(BaseMARLAgent):
             
             while not done:
                 batched_obs_dict = agent._batch_one_observation(obs_dict)
+                
+                
                 action, latent_action = agent.select_action(obs_dict, evaluate=False)
                 
                 # Environment step

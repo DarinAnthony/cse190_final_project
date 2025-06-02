@@ -144,27 +144,115 @@ class CLASSAC:
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=self.lr)
         self.target_entropy = -latent_dim  # -dim(A)
         
-    def _batch_one_observation(self, obs_dict: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """
-        Take a single observation dictionary (values are 1D or 2D arrays)
-        and turn every value into a batch of size 1, i.e. shape (1, *).
+        # this below worked for non-vectorized environments
+    # def _batch_one_observation(self, obs_dict: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    #     """
+    #     Take a single observation dictionary (values are 1D or 2D arrays)
+    #     and turn every value into a batch of size 1, i.e. shape (1, *).
 
-        Args:
-            obs_dict: single observation, e.g. {'camera': array(D,), 'proprio': array(D2,), …}
+    #     Args:
+    #         obs_dict: single observation, e.g. {'camera': array(D,), 'proprio': array(D2,), …}
 
-        Returns:
-            batched_obs: {'camera': array(1, D), 'proprio': array(1, D2), …}
-        """
+    #     Returns:
+    #         batched_obs: {'camera': array(1, D), 'proprio': array(1, D2), …}
+    #     """
+    #     batched = {}
+    #     for key, arr in obs_dict.items():
+    #         a = np.asarray(arr)
+    #         if a.ndim == 1:
+    #             batched[key] = a[np.newaxis, ...]       # shape (1, D)
+    #         else:
+    #             # If already has a batch‐like dim but with size >1, we assume it's okay.
+    #             # e.g. shape (1, D, H, W) stays as is.  Otherwise, you can also do:
+    #             batched[key] = a if a.shape[0] != 1 else a
+    #     return batched
+    
+    def _batch_one_observation(self, obs_dict):
+        """Convert observation to consistent 2D format for vectorized environments"""
         batched = {}
-        for key, arr in obs_dict.items():
-            a = np.asarray(arr)
-            if a.ndim == 1:
-                batched[key] = a[np.newaxis, ...]       # shape (1, D)
+        for key, value in obs_dict.items():
+            # Convert to tensor
+            tensor = torch.as_tensor(value, dtype=torch.float32, device=self.device)
+            
+            if tensor.ndim == 1:
+                # 1D array (4,) -> (4, 1) for scalars per environment
+                # OR (n,) -> (1, n) for single environment with n features
+                if tensor.shape[0] == 4:  # This is vectorized scalar data
+                    batched[key] = tensor.unsqueeze(-1)  # (4,) -> (4, 1)
+                else:  # This is single env with n features
+                    batched[key] = tensor.unsqueeze(0)   # (n,) -> (1, n)
+            elif tensor.ndim == 2:
+                # Already correct 2D format (4, feature_dim)
+                batched[key] = tensor
             else:
-                # If already has a batch‐like dim but with size >1, we assume it's okay.
-                # e.g. shape (1, D, H, W) stays as is.  Otherwise, you can also do:
-                batched[key] = a if a.shape[0] != 1 else a
+                # Handle other dimensions by flattening and ensuring 2D
+                if tensor.shape[0] == 4:  # Vectorized
+                    batched[key] = tensor.view(4, -1)
+                else:  # Single env
+                    batched[key] = tensor.view(1, -1)
+        
         return batched
+    
+    def _batch_vectorized_observations(self, obs_dict, num_envs):
+        """Handle vectorized observations directly without extracting singles"""
+        batched = {}
+        for key, value in obs_dict.items():
+            tensor = torch.as_tensor(value, dtype=torch.float32, device=self.device)
+            
+            if tensor.ndim == 1 and tensor.shape[0] == num_envs:
+                # Scalar per environment: (4,) -> (4, 1)
+                batched[key] = tensor.unsqueeze(-1)
+            elif tensor.ndim == 2 and tensor.shape[0] == num_envs:
+                # Already vectorized correctly: (4, feature_dim)
+                batched[key] = tensor
+            else:
+                # Handle edge cases
+                batched[key] = tensor
+        
+        return batched
+
+    def select_action_batch(self, obs_dict_batch, evaluate=False):
+        """Process batch of 4 observations simultaneously"""
+        
+        # Parse all num_envs observations at once
+        _, _, _, full_obs_batch = self.vae.parse_observation(obs_dict_batch)
+        full_obs_batch = full_obs_batch.to(self.device)
+        
+        with torch.no_grad():
+            if evaluate:
+                mu, _ = self.policy(full_obs_batch)
+                latent_actions = torch.tanh(mu)
+            else:
+                latent_actions, _, _ = self.policy.sample(full_obs_batch)
+            
+            # Decode for all num_envs environments at once
+            r0_batch, r1_batch = self.vae.decode_actions(obs_dict_batch, latent_actions)
+            actions_batch = torch.cat([r0_batch, r1_batch], dim=-1)
+        
+        return actions_batch.detach().cpu().numpy(), latent_actions.detach().cpu().numpy()
+
+    def store_vectorized_transitions(self, replay_buffer, obs_dict, next_obs_dict, 
+                                actions_batch, latent_actions_batch, rewards, dones, num_envs):
+        """Store all 4 environment transitions efficiently"""
+        
+        # Convert to proper tensor format
+        obs_tensors = self._batch_vectorized_observations(obs_dict, num_envs)
+        next_obs_tensors = self._batch_vectorized_observations(next_obs_dict, num_envs)
+        
+        # Parse observations for all environments
+        _, _, _, full_obs = self.vae.parse_observation(obs_tensors)
+        _, _, _, next_full_obs = self.vae.parse_observation(next_obs_tensors)
+        
+        # Store all transitions at once
+        for env_idx in range(num_envs):
+            if not dones[env_idx]:
+                replay_buffer.push(
+                    full_obs[env_idx:env_idx+1],  # Keep batch dimension
+                    torch.as_tensor(latent_actions_batch[env_idx], device=self.device, dtype=torch.float32),
+                    torch.tensor(rewards[env_idx], device=self.device, dtype=torch.float32).unsqueeze(0),
+                    next_full_obs[env_idx:env_idx+1],
+                    torch.tensor(dones[env_idx], device=self.device, dtype=torch.float32).unsqueeze(0)
+                )
         
     def select_action(self, obs_dict, evaluate=False):
         # 1) batch the single observation:
