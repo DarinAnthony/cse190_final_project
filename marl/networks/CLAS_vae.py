@@ -150,21 +150,26 @@ class CLASVAE:
         Args:
             config: Dictionary containing network configurations
         """
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        elif torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        else:
+            self.device = torch.device("cpu")
         
         # Extract dimensions from config
         self.latent_dim = config['latent_dim']
         self.hidden_dim = config.get('hidden_dim', 256)
         
         # Calculate observation dimensions from your data structure
-        self.robot0_obs_dim = 43
-        self.robot1_obs_dim = 43
-        self.shared_obs_dim = 19
+        self.robot0_obs_dim = 39
+        self.robot1_obs_dim = 39
+        self.shared_obs_dim = 17
         self.full_obs_dim = self.robot0_obs_dim + self.robot1_obs_dim + self.shared_obs_dim
         
         # Action dimensions (assuming 7 DOF for each robot arm)
-        self.robot0_action_dim = 7
-        self.robot1_action_dim = 7
+        self.robot0_action_dim = 6
+        self.robot1_action_dim = 6
         self.total_action_dim = self.robot0_action_dim + self.robot1_action_dim
         
         # Initialize networks
@@ -203,7 +208,7 @@ class CLASVAE:
                      list(self.decoder1.parameters()) + 
                      list(self.prior.parameters()))
         
-        self.vae_optimizer = optim.Adam(all_params, lr=3e-4)
+        self.vae_optimizer = optim.Adam(all_params, lr=1e-4)
         
     
     def parse_observation(self, obs_dict: Dict) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -222,10 +227,22 @@ class CLASVAE:
             torch.as_tensor(obs_dict['robot0_eef_pos'], dtype=torch.float32, device=self.device),
             torch.as_tensor(obs_dict['robot0_eef_quat'], dtype=torch.float32, device=self.device),
             torch.as_tensor(obs_dict['robot0_eef_quat_site'], dtype=torch.float32, device=self.device),
-            torch.as_tensor(obs_dict['robot0_gripper_qpos'], dtype=torch.float32, device=self.device),
-            torch.as_tensor(obs_dict['robot0_gripper_qvel'], dtype=torch.float32, device=self.device),
+            # torch.as_tensor(obs_dict['robot0_gripper_qvel'], dtype=torch.float32, device=self.device),
         ], dim=-1)
-        
+
+        """
+        obs_dict keys: dict_keys(
+            ['angle', 'd', 'hole_pos', 'hole_quat', 
+            'object-state', 'peg_quat', 'peg_to_hole', 'robot0_eef_pos', 
+            
+            'robot0_eef_quat', 'robot0_eef_quat_site', 'robot0_joint_pos', 
+            'robot0_joint_pos_cos', 'robot0_joint_pos_sin', 'robot0_joint_vel', 
+            'robot0_proprio-state', 'robot1_eef_pos', 'robot1_eef_quat', 
+            'robot1_eef_quat_site', 'robot1_joint_pos', 'robot1_joint_pos_cos', 
+            'robot1_joint_pos_sin', 'robot1_joint_vel', 'robot1_proprio-state', 't'])
+        """
+
+
         # Robot 1 observations
         robot1_obs = torch.cat([
             torch.as_tensor(obs_dict['robot1_joint_pos'], dtype=torch.float32, device=self.device),
@@ -235,18 +252,18 @@ class CLASVAE:
             torch.as_tensor(obs_dict['robot1_eef_pos'], dtype=torch.float32, device=self.device),
             torch.as_tensor(obs_dict['robot1_eef_quat'], dtype=torch.float32, device=self.device),
             torch.as_tensor(obs_dict['robot1_eef_quat_site'], dtype=torch.float32, device=self.device),
-            torch.as_tensor(obs_dict['robot1_gripper_qpos'], dtype=torch.float32, device=self.device),
-            torch.as_tensor(obs_dict['robot1_gripper_qvel'], dtype=torch.float32, device=self.device),
+            # torch.as_tensor(obs_dict['robot1_gripper_qvel'], dtype=torch.float32, device=self.device),
         ], dim=-1)
         
         # Shared observations (task-related)
         shared_obs = torch.cat([
-            torch.as_tensor(obs_dict['pot_pos'], dtype=torch.float32, device=self.device),
-            torch.as_tensor(obs_dict['pot_quat'], dtype=torch.float32, device=self.device),
-            torch.as_tensor(obs_dict['handle0_xpos'], dtype=torch.float32, device=self.device),
-            torch.as_tensor(obs_dict['handle1_xpos'], dtype=torch.float32, device=self.device),
-            torch.as_tensor(obs_dict['gripper0_to_handle0'], dtype=torch.float32, device=self.device),
-            torch.as_tensor(obs_dict['gripper1_to_handle1'], dtype=torch.float32, device=self.device),
+            torch.as_tensor(obs_dict['angle'], dtype=torch.float32, device=self.device),
+            torch.as_tensor(obs_dict['d'], dtype=torch.float32, device=self.device),
+            torch.as_tensor(obs_dict['t'], dtype=torch.float32, device=self.device),
+            torch.as_tensor(obs_dict['hole_pos'], dtype=torch.float32, device=self.device),
+            torch.as_tensor(obs_dict['hole_quat'], dtype=torch.float32, device=self.device),
+            torch.as_tensor(obs_dict['peg_quat'], dtype=torch.float32, device=self.device),
+            torch.as_tensor(obs_dict['peg_to_hole'], dtype=torch.float32, device=self.device),
         ], dim=-1)
         
         # Full observation (concatenated)
@@ -285,50 +302,56 @@ class CLASVAE:
         # Encoder: q(v|o,u) - get latent distribution parameters
         mu_enc, logvar_enc = self.encoder(full_obs, actions)
         
-        # Sample latent action (before tanh)
+        if torch.isnan(mu_enc).any() or torch.isnan(logvar_enc).any():
+            raise RuntimeError("NaN detected in encoder output")
+
         latent_pre_tanh = self.reparameterize(mu_enc, logvar_enc)
         latent_action = torch.tanh(latent_pre_tanh)
-        
-        # Decoders: p(u|o,v) - get action distribution parameters
-        mu_dec_0, logvar_dec_0 = self.decoder0(
-            full_obs, 
-            latent_action
-        )
-        mu_dec_1, logvar_dec_1 = self.decoder1(
-            full_obs, 
-            latent_action
-        )
-        
+
+        mu_dec_0, logvar_dec_0 = self.decoder0(full_obs, latent_action)
+        mu_dec_1, logvar_dec_1 = self.decoder1(full_obs, latent_action)
+
+        if torch.isnan(mu_dec_0).any() or torch.isnan(logvar_dec_0).any():
+            raise RuntimeError("NaN in decoder0 output")
+        if torch.isnan(mu_dec_1).any() or torch.isnan(logvar_dec_1).any():
+            raise RuntimeError("NaN in decoder1 output")
+
         dist0 = self.tanh_normal(mu_dec_0, logvar_dec_0)
         dist1 = self.tanh_normal(mu_dec_1, logvar_dec_1)
-        
-        # Prior: p(v|o)
-        mu_prior, logvar_prior = self.prior(full_obs)
-        
+
         # Split actions
         robot0_action = actions[:, :self.robot0_action_dim]
         robot1_action = actions[:, self.robot0_action_dim:]
-        
-        logp0 = dist0.log_prob(robot0_action).sum(dim=-1)   # sum over action dims
+
+        # *** CLAMP the buffered actions into (-1+eps, 1-eps) ***
+        eps = 1e-4
+        robot0_action = robot0_action.clamp(min=-1.0 + eps, max=1.0 - eps)
+        robot1_action = robot1_action.clamp(min=-1.0 + eps, max=1.0 - eps)
+
+        logp0 = dist0.log_prob(robot0_action).sum(dim=-1)
         logp1 = dist1.log_prob(robot1_action).sum(dim=-1)
-        
+
+        if torch.isnan(logp0).any() or torch.isnan(logp1).any():
+            raise RuntimeError("NaN in log-probability")
+
         recon_loss = -(logp0 + logp1).mean()
-        
-        # KL divergence between encoder and prior (both before tanh)
-        # KL(q(v|o,u) || p(v|o))
+
+        mu_prior, logvar_prior = self.prior(full_obs)
+        if torch.isnan(mu_prior).any() or torch.isnan(logvar_prior).any():
+            raise RuntimeError("NaN in prior output")
+
+        # KL: q(v|o,u) vs p(v|o)
         kl_loss = -0.5 * torch.sum(
-            1 + logvar_enc - logvar_prior - 
+            1 + logvar_enc - logvar_prior -
             ((mu_enc - mu_prior).pow(2) + logvar_enc.exp()) / logvar_prior.exp(),
             dim=-1
         ).mean()
-        
+
+        if torch.isnan(kl_loss):
+            raise RuntimeError("NaN in kl_loss")
+
         total_loss = recon_loss + kl_loss
-        
-        return {
-            'total_loss': total_loss,
-            'recon_loss': recon_loss,
-            'kl_loss': kl_loss,
-        }
+        return {'total_loss': total_loss, 'recon_loss': recon_loss, 'kl_loss': kl_loss}
     
     def train_step(self, obs_dict: Dict, actions: torch.Tensor) -> Dict[str, float]:
         """Single training step for the VAE"""
@@ -346,6 +369,7 @@ class CLASVAE:
     
     def decode_actions(self, obs_dict: Dict, latent_action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Decode latent action to robot-specific actions"""
+        
         _, _, _, full_obs = self.parse_observation(obs_dict)
         
         full_obs = full_obs.to(self.device)

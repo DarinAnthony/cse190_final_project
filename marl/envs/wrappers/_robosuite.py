@@ -165,3 +165,6 @@ class GymWrapper(Wrapper, gym.Env):
         wrapper for calling underlying env close function
         """
         self.env.close()
+        
+    def modify_robots(self):
+        print(self.env.robots)
