@@ -468,7 +468,7 @@ class CLASVAEAgent(BaseMARLAgent):
             'latent_dim': 16,
             'hidden_dim': 256
         }
-        self.load_vae("clas_vae_prefilled.pt")
+        self.load_vae("clas_vae_prefilled_beta.pt")
         self.eval_mode()
         
         # SAC config
