@@ -21,23 +21,19 @@ def env_factory(
     idx: int, 
     max_episode_steps: int = 200, 
     record_video_path: str = None, 
+    record_video_interval: int = 2000,
     env_kwargs: Dict[str, Any] = {}, 
     wrappers: List[Callable] = []):
     """
     Creates a factory function that initializes and returns a wrapped Gymnasium environment.
 
-    This factory applies a standard set of wrappers to ensure consistency with the codebase,
-    including:
-    - `GymnasiumWrapper`: Ensures observations are in dict format.
-    - `TimeLimit`: Enforces a maximum episode length.
-    - Custom wrappers passed in the `wrappers` list.
-    - `RecordVideo`: Optionally records videos if `record_video_path` is provided and `idx == 0`.
 
     Args:
         env_id (str): ID of the Gymnasium environment to create.
         idx (int): Index of the environment, used for vector envs.
         max_episode_steps (int): Maximum number of steps per episode before termination.
         record_video_path (str, optional): Directory path to store recorded videos.
+        record_video_interval (int, optional): Interval between video recordings (in steps).
         env_kwargs (Dict[str, Any]): Additional keyword arguments passed to the environment constructor.
         wrappers (List[Callable]): A list of callable wrappers to apply to the environment.
 
@@ -54,6 +50,6 @@ def env_factory(
         for wrapper in wrappers:
             env = wrapper(env)
         if record_video_path is not None and idx == 0:
-            env = RecordVideo(env, record_video_path, episode_trigger=lambda x: True)
+            env = RecordVideo(env, record_video_path, episode_trigger=lambda x: x % record_video_interval == 0)
         return env
     return _init

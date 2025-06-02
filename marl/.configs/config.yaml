@@ -1,3 +1,4 @@
+output_dir: results/${hydra:runtime.choices.environment}/${hydra:runtime.choices.policy}/${exp_name}/${now:%Y.%m.%d}
 defaults:
   - _self_
   - environment: TwoArmLift
@@ -5,12 +6,16 @@ defaults:
   - agent: SharedCritic
   - algorithm: MAPPO
 
-seed: 42
+seed: 0
 total_timesteps: 1_000_000
-exp_name: "two_actors_shared_critic"
+exp_name: "exp_name"
 
+# Video recording configuration
+video: true                                   # Flag to record videos during training  
+video_interval: 1000                          # Interval between video recordings (in steps)  
+video_path: ${output_dir}/videos
 
 #Custom Hydra run directory
 hydra:
   run:
-    dir: results/${hydra:runtime.choices.environment}/${hydra:runtime.choices.policy}/${now:%Y.%m.%d}
+    dir: ${output_dir}

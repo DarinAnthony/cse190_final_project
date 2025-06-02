@@ -35,19 +35,21 @@ def instantiate_env(config: DictConfig):
     Returns:
         Constructed environment instance
     """
-    env_kwargs = config.get("env_kwargs", {})
+    env_config = config["environment"]
+    env_kwargs = env_config.get("env_kwargs", {})
     
     # Resolve controller configuration if present
     if "controller_configs" in env_kwargs:
         env_kwargs["controller_configs"] = resolve_controller(env_kwargs["controller_configs"])
     
     return make_env(
-        env_id=config.get("id"),
-        env_type=config.get("type"),
-        num_envs=config.get("num_envs"),
-        seed=config.get("seed"),
-        max_episode_steps=config.get("max_episode_steps", 200),
-        record_video_path=config.get("record_video_path"),
+        env_id=env_config.get("id"),
+        env_type=env_config.get("type"),
+        num_envs=env_config.get("num_envs"),
+        seed=env_config.get("seed"),
+        max_episode_steps=env_config.get("max_episode_steps", 200),
+        record_video_path=config.get("video_path") if config.get("video") else None,
+        record_video_interval=config.get("video_interval") if config.get("video") else None,
         env_kwargs=env_kwargs
     )
 
@@ -268,7 +270,7 @@ def instantiate_all(config: DictConfig) -> Tuple[Any, BasePolicy, BaseAlgorithm,
         Tuple of (environment, agent) ready for training
     """
     config = OmegaConf.to_container(config, resolve=True)
-    env = instantiate_env(config["environment"])
+    env = instantiate_env(config)
     policy = instantiate_policy(config["policy"])
     algorithm = instantiate_algorithm(config["algorithm"], policy)
     agent = instantiate_agent(

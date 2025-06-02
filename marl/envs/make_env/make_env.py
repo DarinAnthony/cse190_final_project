@@ -20,6 +20,7 @@ def make_env(
     num_envs: Optional[int] = 1,
     seed: Optional[int] = 0,
     record_video_path: Optional[str] = None,
+    record_video_interval: Optional[int] = 2000,
     env_kwargs: dict = dict(),
     wrappers: list[Callable] = [],
     **kwargs: Any
@@ -37,6 +38,7 @@ def make_env(
         num_envs (int, optional): Number of parallel environments to create. Defaults to 1.
         seed (int, optional): Random seed used to initialize the environment. Defaults to 0.
         record_video_path (str, optional): Directory path to save episode recordings.
+        record_video_interval (int, optional): Interval between video recordings (in steps).
         env_kwargs (dict): Additional arguments to pass to the environment constructor.
         wrappers (list[Callable]): List of additional wrappers to apply to each environment.
         **kwargs (Any): Additional arguments passed to the environment factory.
@@ -73,6 +75,7 @@ def make_env(
                         idx=idx,
                         env_kwargs=env_kwargs,
                         record_video_path=record_video_path,
+                        record_video_interval=record_video_interval,
                         wrappers=wrappers,
                         **kwargs
                     )
@@ -85,6 +88,7 @@ def make_env(
                 idx=0,
                 env_kwargs=env_kwargs,
                 record_video_path=record_video_path,
+                record_video_interval=record_video_interval,
                 wrappers=wrappers,
                 **kwargs
             )()

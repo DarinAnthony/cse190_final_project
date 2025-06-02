@@ -2,7 +2,6 @@ id: "TwoArmHandover"
 type: "gym:cpu"
 num_envs: 1
 seed: 0
-# record_video_path: None #If not none, ensure has_renderer is true
 
 env_kwargs:
   # Robot configuration
@@ -34,14 +33,14 @@ env_kwargs:
   reward_shaping: true                         # Whether to use dense or sparse rewards
 
   # Rendering settings
-  has_renderer: true                           # Whether to render in a viewer
+  has_renderer: false                           # Whether to render in a viewer
   has_offscreen_renderer: true                 # Whether to use off-screen rendering
-  render_camera: "frontview"                   # Camera to render from
+  render_camera: "frontview"                   # Camera to render from (null for default angle)
   render_collision_mesh: false                 # Don't render collision meshes
   render_visual_mesh: true                     # Render visual meshes
 
   # Camera settings
-  camera_names: ["frontview", "birdview"]      # Can be 'frontview', 'birdview', 'agentview', 'sideview' \
+  camera_names: ["frontview"]                  # Can be 'frontview', 'birdview', 'agentview', 'sideview' \
                                                #'robot0_robotview', 'robot0_eye_in_hand', 'robot1_robotview', 'robot1_eye_in_hand
   camera_heights: 256                          # Height of camera frames
   camera_widths: 256                           # Width of camera frames

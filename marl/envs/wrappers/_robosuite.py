@@ -2,6 +2,140 @@ from robosuite.wrappers import Wrapper
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
+from typing import Callable
+import os
+import imageio
+
+class RecordVideoWrapper(gym.Wrapper):
+    """
+    Records 200‐frame video snippets from each offscreen camera every time
+    step_trigger(global_step) returns True.  After collecting 200 frames,
+    the wrapper auto‐saves one .mp4 per camera and clears its buffers until
+    the next trigger.
+
+    Args:
+        env (gym.Env): Any Gym/robosuite env with .camera_names and obs["<cam>_image"].
+        video_folder (str): Directory where snippet files will be written.
+        step_trigger (Callable[[int], bool]): Given a global step count (0,1,2,...),
+                   returns True exactly on the steps where you want to start a new 200‐frame snippet.
+        fps (int): Frames per second for the output videos (default=20).
+    """
+
+    def __init__(
+        self,
+        env: gym.Env,
+        video_folder: str,
+        step_trigger: Callable[[int], bool],
+        fps: int = 20,
+    ):
+        super().__init__(env)
+
+        # Ensure the wrapped env has camera_names
+        if not hasattr(self.env.unwrapped, "camera_names"):
+            raise AttributeError(
+                "Wrapped env must have `camera_names` (list of strings)."
+            )
+        self.camera_names = list(self.env.unwrapped.camera_names)
+        print(f'Recording videos with {self.camera_names} cameras')
+
+        # Where to write the snippet files
+        self.video_folder = os.path.abspath(video_folder)
+        os.makedirs(self.video_folder, exist_ok=True)
+
+        self.step_trigger = step_trigger
+        self.fps = fps
+
+        # Global step counter across all episodes
+        self.global_step = -1
+
+        # Are we currently recording a snippet? If True, we append frames until we hit 200.
+        self.recording = False
+
+        # How many frames have we collected in the current snippet?
+        self._frame_count = 0
+        self._max_frames = 200  # snippet length
+
+        # Buffers: one list of frames per camera
+        self.frames = {cam: [] for cam in self.camera_names}
+
+        # How many snippets have we already saved?  Used to increment filenames.
+        self._snippet_counter = 0
+
+    def reset(self, *, seed=None, options=None):
+        """
+        Reset the environment.  Also clears any partial snippet (if in progress)
+        so that each episode always begins with recording=False and 0 frames collected.
+        We do NOT reset global_step, so step_trigger continues counting across episodes.
+        """
+        obs, info = super().reset(seed=seed, options=options)
+        # Abort any ongoing snippet and clear buffers
+        self.recording = False
+        self._frame_count = 0
+        self.frames = {cam: [] for cam in self.camera_names}
+        return obs, info
+
+    def step(self, action):
+        """
+        Step through the env, bump global_step, check step_trigger:
+          • If step_trigger(global_step) is True and we are NOT already recording,
+            we start a new 200‐frame snippet (recording=True, _frame_count=0, buffers cleared).
+          • If recording=True, we append obs["<cam>_image"] for each camera. 
+          • Once _frame_count hits 200, we auto‐save all camera buffers to disk
+            (one .mp4 per camera, named <camera>_snippet_<idx>.mp4), clear buffers,
+            increment _snippet_counter, and set recording=False until the next trigger.
+        """
+        obs, reward, terminated, truncated, info = super().step(action)
+        self.global_step += 1
+
+        # If the trigger fires right now and we're not already collecting a snippet, start recording
+        if not self.recording and self.step_trigger(self.global_step):
+            self.recording = True
+            self._frame_count = 0
+            self.frames = {cam: [] for cam in self.camera_names}
+
+        # If we're in the middle of a snippet, collect this frame
+        if self.recording:
+            for cam in self.camera_names:
+                key = f"{cam}_image"
+                if key not in obs:
+                    raise KeyError(f"Expected obs to contain '{key}' but it's missing.")
+                self.frames[cam].append(obs[key])
+            self._frame_count += 1
+
+            # If we've collected 200 frames, save and reset
+            if self._frame_count >= self._max_frames:
+                self._save_current_snippet()
+                self.recording = False
+                self._frame_count = 0
+                # Leave self.frames cleared for the next snippet
+                self.frames = {cam: [] for cam in self.camera_names}
+
+        return obs, reward, terminated, truncated, info
+
+    def _save_current_snippet(self):
+        """
+        Save the buffered frames (exactly 200 for each camera) as
+        <video_folder>/<camera>_snippet_<snippet_idx>.mp4.  Uses imageio.
+        Rotates frames 180 degrees for 'frontview' camera only.
+        """
+        snippet_idx = self._snippet_counter
+        for cam, buffer in self.frames.items():
+            if len(buffer) == 0:
+                continue
+            filename = os.path.join(
+                self.video_folder, f"{cam}_snippet_{snippet_idx}.mp4"
+            )
+            writer = imageio.get_writer(filename, fps=self.fps)
+            try:
+                for frame in buffer:
+                    # Only rotate if it's the frontview camera
+                    if cam == 'frontview': #robosuite camera is flipped 180 degrees for some reason
+                        frame = np.rot90(frame, k=2)
+                    writer.append_data(frame)
+            finally:
+                writer.close()
+        print(f"Saved snippet {snippet_idx} (200 frames) for cameras: {self.camera_names}")
+        self._snippet_counter += 1
 
 class GymWrapper(Wrapper, gym.Env):
     metadata = None
