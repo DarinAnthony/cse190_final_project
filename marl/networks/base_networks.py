@@ -15,11 +15,6 @@ class BaseNetwork(nn.Module, ABC):
     def init_weights(self, **kwargs: Any):
         """Initialize network weights."""
         raise NotImplementedError("Subclasses must implement this method.")
-    
-    @abstractmethod
-    def parameters(self) -> Iterator[Parameter]:
-        """Get network parameters."""
-        pass
                     
     def save(self, path: str) -> None:
         """Save network parameters to disk."""

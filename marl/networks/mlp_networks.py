@@ -132,9 +132,9 @@ class MLPActorNetwork(BaseActorNetwork):
         """Entropy of the action distribution."""
         return self.distribution.entropy().sum(dim=-1)
     
-    def parameters(self) -> Iterator[Parameter]:
-        """Parameters of the network."""
-        return self.actor.parameters()
+    # def parameters(self) -> Iterator[Parameter]:
+    #     """Parameters of the network."""
+    #     return self.actor.parameters()
                     
             
 class MLPCriticNetwork(BaseCriticNetwork):
@@ -192,8 +192,8 @@ class MLPCriticNetwork(BaseCriticNetwork):
         """
         return self.critic(obs)
     
-    def parameters(self) -> Iterator[Parameter]:
-        return self.critic.parameters()
+    # def parameters(self) -> Iterator[Parameter]:
+    #     return self.critic.parameters()
     
 class MLPActorCriticNetwork(BaseActorCriticNetwork):
     """MLP-based Actor-Critic Network.
@@ -320,9 +320,9 @@ class MLPActorCriticNetwork(BaseActorCriticNetwork):
         """Entropy of the action distribution."""
         return self.actor.distribution.entropy().sum(dim=-1)
     
-    def parameters(self) -> Iterator[Parameter]:
-        """Parameters of the network."""
-        return iter(list(self.actor.parameters()) + list(self.critic.parameters()))
+    # def parameters(self) -> Iterator[Parameter]:
+    #     """Parameters of the network."""
+    #     return iter(list(self.actor.parameters()) + list(self.critic.parameters()))
         
         
 class MLPEncoderNetwork(BaseNetwork):
@@ -386,7 +386,7 @@ class MLPEncoderNetwork(BaseNetwork):
                     raise ValueError(f"Unknown init_method: {init_method}")
                 nn.init.zeros_(m.bias)
 
-    def parameters(self) -> Iterator[Parameter]:
-        """Parameters of the network."""
-        return self.encoder.parameters()
+    # def parameters(self) -> Iterator[Parameter]:
+    #     """Parameters of the network."""
+    #     return self.encoder.parameters()
         
