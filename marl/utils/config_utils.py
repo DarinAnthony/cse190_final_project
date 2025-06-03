@@ -160,8 +160,8 @@ def parse_agent_configs(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     for agent_name in critics:
         agent_config = {}
         if agent_name in agent_specific: 
-            agent_config["learning_rate"] = agent_specific[agent_name]["learning_rate"]
-            agent_config["max_grad_norm"] = agent_specific[agent_name]["max_grad_norm"]
+            agent_config["learning_rate"] = agent_specific[agent_name].get("learning_rate", global_params["learning_rate"])
+            agent_config["max_grad_norm"] = agent_specific[agent_name].get("max_grad_norm", global_params["max_grad_norm"])
         else:
             agent_config["learning_rate"] = global_params["learning_rate"]
             agent_config["max_grad_norm"] = global_params["max_grad_norm"]
@@ -224,6 +224,7 @@ def instantiate_agent(agent_config: DictConfig, env: Any, policy: MultiAgentPoli
     Build agent from configuration.
     """
     actor_obs_keys, critic_obs_keys = _extract_observation_keys(agent_config)
+    agent_kwargs = agent_config.get("kwargs", {})
     
     # Extract agent behavioral flags
     normalize_observations = _extract_agent_kwargs(agent_config)
@@ -233,7 +234,7 @@ def instantiate_agent(agent_config: DictConfig, env: Any, policy: MultiAgentPoli
         "actor_obs_keys": actor_obs_keys,
         "critic_obs_keys": critic_obs_keys
     }
-    num_transitions_per_env = agent_config.get("num_transitions_per_env", 200)
+    num_transitions_per_env = agent_kwargs.get("num_transitions_per_env", 200)
     if agent_config.get("agent_class") == "BasicMARLAgent":
         return BasicMARLAgent(
         env=env,

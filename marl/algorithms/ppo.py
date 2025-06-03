@@ -269,7 +269,7 @@ class PPO(BaseAlgorithm):
 
       # Compute value loss only if updating critic
       if update_critic:
-        if self.use_clipped_value_loss:
+        if self.use_clipped_value_loss[actor_id]:
             value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(
                 -self.clip_param[actor_id], self.clip_param[actor_id]
             )
@@ -282,22 +282,14 @@ class PPO(BaseAlgorithm):
         value_loss = torch.tensor(0.0)  # Zero loss when not updating critic
 
       # Actor loss (always computed)
-      actor_loss = surrogate_loss - self.entropy_coef[actor_id] * entropy_batch.mean()
+      loss = surrogate_loss + self.value_loss_coef[actor_id] * value_loss - self.entropy_coef[actor_id] * entropy_batch.mean()
       
-      # Critic loss (only computed when updating critic)
-      critic_loss = self.value_loss_coef[actor_id] * value_loss if update_critic else torch.tensor(0.0)
-
       # Handle optimizer updates based on whether critic is being updated
       if self.optimizers[actor_id] is self.optimizers[critic_id]:
         # Same optimizer for both actor and critic
         self.optimizers[actor_id].zero_grad()
-        
-        if update_critic:
-          total_loss = actor_loss + critic_loss
-        else:
-          total_loss = actor_loss
           
-        total_loss.backward()
+        loss.backward()
         
         # Clip gradients
         if update_critic:
@@ -323,14 +315,11 @@ class PPO(BaseAlgorithm):
         # Different optimizers for actor and critic
         # Always update actor
         self.optimizers[actor_id].zero_grad()
-        actor_loss.backward(retain_graph=update_critic)  # retain_graph only if we need to update critic too
+        loss.backward()  # retain_graph only if we need to update critic too
         nn.utils.clip_grad_norm_(self.policy.parameters(agent_id=actor_id), self.max_grad_norm[actor_id])
         self.optimizers[actor_id].step()
-
-        # Only update critic if requested
         if update_critic:
           self.optimizers[critic_id].zero_grad()
-          critic_loss.backward()
           nn.utils.clip_grad_norm_(self.policy.parameters(agent_id=critic_id), self.max_grad_norm[critic_id])
           self.optimizers[critic_id].step()
 

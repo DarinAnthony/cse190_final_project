@@ -18,6 +18,11 @@ global:
   normalize_advantage_per_mini_batch: false
   total_timesteps: 1_000_000
 
+agent_specific_hyperparams: 
+# #   actor_0:
+#     learning_rate: 1e-4
+  critic:
+    learning_rate: 1e-3
 
 agent_mapping:
   actor_0: critic
