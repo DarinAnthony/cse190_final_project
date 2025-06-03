@@ -315,11 +315,12 @@ class PPO(BaseAlgorithm):
         # Different optimizers for actor and critic
         # Always update actor
         self.optimizers[actor_id].zero_grad()
+        if update_critic:
+          self.optimizers[critic_id].zero_grad()
         loss.backward()  # retain_graph only if we need to update critic too
         nn.utils.clip_grad_norm_(self.policy.parameters(agent_id=actor_id), self.max_grad_norm[actor_id])
         self.optimizers[actor_id].step()
         if update_critic:
-          self.optimizers[critic_id].zero_grad()
           nn.utils.clip_grad_norm_(self.policy.parameters(agent_id=critic_id), self.max_grad_norm[critic_id])
           self.optimizers[critic_id].step()
 
