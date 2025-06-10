@@ -269,7 +269,7 @@ def instantiate_agent(agent_config: DictConfig, env: Any, policy: MultiAgentPoli
             algorithm=algorithm,
             logger=logger,
             device = policy.device,
-            reload_buffer=False,
+            reload_buffer=True,
             
         )
     else:
