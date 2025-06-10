@@ -36,7 +36,7 @@ class CLASVAEAgent(BaseMARLAgent):
         normalize_observations: bool,
         vae_config: Dict[str, Any],
         sac_config: Dict[str, Any],
-        reload_buffer: bool = False,
+        reload_buffer: bool = True,
         vae_buffer_size: int = 400000,
         vae_batch_size: int = 128,
         vae_train_freq: int = 1,
