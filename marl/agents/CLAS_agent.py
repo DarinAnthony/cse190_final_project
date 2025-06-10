@@ -5,6 +5,8 @@ from tqdm.auto import tqdm
 from torch.utils.tensorboard import SummaryWriter
 import os
 import pickle
+import logging
+import datetime
 
 from marl.agents.base_marl import BaseMARLAgent
 from marl.policies.base_policy import BasePolicy
@@ -118,6 +120,26 @@ class CLASVAEAgent(BaseMARLAgent):
         }
         
         self.tb_writer = SummaryWriter(log_dir="runs/CLASVAE_experiment")
+        
+        # Create logs directory
+        os.makedirs("logs", exist_ok=True)
+        
+        # Setup file logger
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = f"logs/clas_training_{timestamp}.log"
+        
+        # Configure logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_file),
+                logging.StreamHandler()  # Also print to console
+            ]
+        )
+        
+        self.file_logger = logging.getLogger('CLAS_Training')
+        self.file_logger.info("=== CLAS Training Started ===")
 
     def store_transition(self, buffer: VAEBuf, obs_dict: Dict[str, np.ndarray], actions: np.ndarray):
         """
@@ -372,23 +394,32 @@ class CLASVAEAgent(BaseMARLAgent):
         for update in range(vae_updates):
             losses = self.train_vae_step()           # draws a batch each call
             if self.logger and update % 500 == 0:
-                self.logger.info(
-                    f"VAE-update {update}/{vae_updates} "
-                    f"| total: {losses.get('total_loss', 0):.4f} "
-                    f"| recon: {losses.get('recon_loss', 0):.4f} "
-                    f"| KL:    {losses.get('kl_loss', 0):.4f}"
-                )
+                log_msg = (f"VAE-update {update}/{vae_updates} "
+                        f"| total: {losses.get('total_loss', 0):.4f} "
+                        f"| recon: {losses.get('recon_loss', 0):.4f} "
+                        f"| KL: {losses.get('kl_loss', 0):.4f}")
+                
+                # File + console logging
+                self.file_logger.info(log_msg)
+                self.logger.info(log_msg)  # Keep existing logger too
+                
                 self.eval_mode()
                 eval_dict = self.evaluate_vae(self.vae, self.vae_eval_buffer, 50)
+                
+                eval_msg = (f"VAE evaluation: "
+                            f"recon_loss={eval_dict.get('val_recon_loss', 0):.4f}, "
+                            f"kl_loss={eval_dict.get('val_kl', 0):.4f}, "
+                            f"mse={eval_dict.get('val_mse', 0):.4f}")
+                
+                # File + console logging for evaluation
+                self.file_logger.info(eval_msg)
+                self.logger.info(eval_msg)
+                
+                # TensorBoard logging (keep existing)
                 self.tb_writer.add_scalar("VAE/recon_eval_loss", eval_dict["val_recon_loss"], update)
                 self.tb_writer.add_scalar("VAE/kl_eval_loss", eval_dict["val_kl"], update)
                 self.tb_writer.add_scalar("VAE/mse_eval_loss", eval_dict["val_mse"], update)
-                self.logger.info(
-                    f"VAE evaluation: "
-                    f"recon_loss={eval_dict.get('val_recon_loss', 0):.4f}, "
-                    f"kl_loss={eval_dict.get('val_kl', 0):.4f}, "
-                    f"mse={eval_dict.get('val_mse', 0):.4f}"
-                )
+                
                 self.train_mode()
                 
             self.tb_writer.add_scalar("VAE/total_loss", losses["total_loss"], update)
@@ -403,11 +434,10 @@ class CLASVAEAgent(BaseMARLAgent):
         self.learn_SAC_policy()
         
     def learn_SAC_policy(self):
-        # Load VAE
-        config = {
-            'latent_dim': 16,
-            'hidden_dim': 256
-        }
+        # File logging for phase transition
+        self.file_logger.info("=== Starting SAC Policy Training Phase ===")
+        self.file_logger.info("VAE warmup completed, beginning joint SAC+VAE training")
+
         self.load_vae("clas_vae_prefilled_beta.pt")
         self.eval_mode()
         
@@ -580,9 +610,13 @@ class CLASVAEAgent(BaseMARLAgent):
                 mean_vae_recon = np.mean(vae_recon_losses[-100:]) if vae_recon_losses else 0.0
                 mean_vae_kl = np.mean(vae_kl_losses[-100:]) if vae_kl_losses else 0.0
                 
-                print(f"Ep {episode:4d} | R̄(10)={avg_reward:7.2f} "
-                    f"| SAC: q1={mean_q1:6.3f} q2={mean_q2:6.3f} π={mean_pi:6.3f} α={mean_alp:6.3f} "
-                    f"| VAE: recon={mean_vae_recon:6.3f} kl={mean_vae_kl:6.3f}")
+                log_msg = (f"Ep {episode:4d} | R̄(10)={avg_reward:7.2f} "
+                        f"| SAC: q1={mean_q1:6.3f} q2={mean_q2:6.3f} π={mean_pi:6.3f} α={mean_alp:6.3f} "
+                        f"| VAE: recon={mean_vae_recon:6.3f} kl={mean_vae_kl:6.3f}")
+                
+                # File + console logging
+                self.file_logger.info(log_msg)
+                print(log_msg)  # Keep existing print
                 
                 # TensorBoard logging
                 writer.add_scalar("reward/avg_10", avg_reward, episode)
@@ -595,17 +629,23 @@ class CLASVAEAgent(BaseMARLAgent):
             if episode % 50 == 0 and len(self.vae_eval_buffer) > self.min_buffer_size:
                 self.eval_mode()
                 eval_dict = self.evaluate_vae(self.vae, self.vae_eval_buffer, 50)
+                
+                eval_msg = (f"  VAE Eval: recon={eval_dict['val_recon_loss']:.4f} "
+                            f"kl={eval_dict['val_kl']:.4f} mse={eval_dict['val_mse']:.4f}")
+                
+                # File + console logging
+                self.file_logger.info(eval_msg)
+                print(eval_msg)  # Keep existing print
+                
+                # TensorBoard logging (keep existing)
                 writer.add_scalar("joint_vae/val_recon_loss", eval_dict["val_recon_loss"], episode)
                 writer.add_scalar("joint_vae/val_kl_loss", eval_dict["val_kl"], episode)
                 writer.add_scalar("joint_vae/val_mse", eval_dict["val_mse"], episode)
-                
-                print(f"  VAE Eval: recon={eval_dict['val_recon_loss']:.4f} "
-                    f"kl={eval_dict['val_kl']:.4f} mse={eval_dict['val_mse']:.4f}")
             
             # Save checkpoints
             if episode % 50 == 0 or avg_reward > best_reward:
                 best_reward = max(best_reward, avg_reward)
-                
+    
                 # Save SAC checkpoint
                 sac_ckpt_name = f"sac_weights/clas_sac_ep{episode:05d}.pt"
                 agent.save_checkpoint(sac_ckpt_name, episode, avg_reward)
@@ -615,8 +655,12 @@ class CLASVAEAgent(BaseMARLAgent):
                 os.makedirs("joint_vae_weights", exist_ok=True)
                 self.save_vae(vae_ckpt_name)
                 
-                print(f"  Saved checkpoints: SAC={sac_ckpt_name}, VAE={vae_ckpt_name}")
-            
+                checkpoint_msg = f"  Saved checkpoints: SAC={sac_ckpt_name}, VAE={vae_ckpt_name}"
+                
+                # File + console logging
+                self.file_logger.info(checkpoint_msg)
+                print(checkpoint_msg)  # Keep existing print
+                
             pbar.update(1)
         
         pbar.close()
@@ -627,13 +671,18 @@ class CLASVAEAgent(BaseMARLAgent):
         final_vae_path = "joint_vae_weights/clas_vae_final_joint.pt"
         agent.save_checkpoint(final_sac_path, num_episodes, avg_reward)
         self.save_vae(final_vae_path)
-        
-        print(f"Joint training completed!")
-        print(f"Final SAC model saved to: {final_sac_path}")
-        print(f"Final VAE model saved to: {final_vae_path}")
-        print(f"Total environment steps: {total_env_steps}")
-        print(f"Total SAC training steps: {sac_training_steps}")
-        print(f"Total VAE training steps: {self.vae_training_steps}")
+
+        completion_msg = (f"Joint training completed! "
+                        f"Final SAC model: {final_sac_path} | "
+                        f"Final VAE model: {final_vae_path} | "
+                        f"Total env steps: {total_env_steps} | "
+                        f"Total SAC steps: {sac_training_steps} | "
+                        f"Total VAE steps: {self.vae_training_steps}")
+
+        # File + console logging
+        self.file_logger.info("=== JOINT TRAINING COMPLETED ===")
+        self.file_logger.info(completion_msg)
+        print(completion_msg)  # Keep existing print
         
         return agent, {
             "episode_rewards": episode_rewards,
