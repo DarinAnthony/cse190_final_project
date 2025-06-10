@@ -50,7 +50,7 @@ class CLASEncoder(nn.Module):
         # Clamp logvar to avoid extreme values
         # This is optional but recommended to prevent numerical instability during training
         # try turning this off if anything goes wrong during training
-        logvar = logvar.clamp(min=-10, max=2)
+        # logvar = logvar.clamp(min=-10, max=2)
 
         return mu, logvar
 
@@ -150,9 +150,7 @@ class CLASVAE:
         Args:
             config: Dictionary containing network configurations
         """
-        if torch.backends.mps.is_available():
-            self.device = torch.device("mps")
-        elif torch.cuda.is_available():
+        if torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
             self.device = torch.device("cpu")
@@ -208,7 +206,7 @@ class CLASVAE:
                      list(self.decoder1.parameters()) + 
                      list(self.prior.parameters()))
         
-        self.vae_optimizer = optim.Adam(all_params, lr=1e-4)
+        self.vae_optimizer = optim.Adam(all_params, lr=config.get('lr', 1e-4))
         
     
     def parse_observation(self, obs_dict: Dict) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -385,6 +383,23 @@ class CLASVAE:
             robot1_action = torch.tanh(mu_1)
         
         return robot0_action, robot1_action
+    
+    def eval(self):
+        """Set agent to evaluation mode"""
+        # Set VAE to eval mode
+        self.encoder.eval()
+        self.decoder0.eval()
+        self.decoder1.eval()
+        self.prior.eval()
+        
+        for p in self.encoder.parameters():   # (explicit is better)
+            p.requires_grad = False
+        for p in self.decoder0.parameters():   # (explicit is better)
+            p.requires_grad = False
+        for p in self.decoder1.parameters():   # (explicit is better)
+            p.requires_grad = False
+        for p in self.prior.parameters():   # (explicit is better)
+            p.requires_grad = False
     
     
 # unit tests for CLASVAE as sanity check

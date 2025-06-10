@@ -37,7 +37,7 @@ class CLASVAEAgent(BaseMARLAgent):
         vae_config: Dict[str, Any],
         sac_config: Dict[str, Any],
         reload_buffer: bool = False,
-        vae_buffer_size: int = 100000,
+        vae_buffer_size: int = 400000,
         vae_batch_size: int = 128,
         vae_train_freq: int = 1,
         min_buffer_size: int = 1000,
@@ -67,13 +67,13 @@ class CLASVAEAgent(BaseMARLAgent):
         
         # VAE-specific initialization
         self.vae_config = vae_config
-        self.vae_batch_size = vae_batch_size
-        self.vae_train_freq = vae_train_freq
+        self.vae_batch_size = vae_config.get('vae_batch_size', vae_batch_size)
+        self.vae_train_freq = vae_config.get('vae_train_freq', vae_train_freq)
         self.min_buffer_size = min_buffer_size
         
         # Initialize VAE buffer
-        self.vae_buffer = VAEBuf(capacity=vae_buffer_size)
-        self.vae_eval_buffer = VAEBuf(capacity= vae_buffer_size)
+        self.vae_buffer = VAEBuf(capacity=self.vae_config.get('vae_buffer_size', vae_buffer_size))
+        self.vae_eval_buffer = VAEBuf(capacity=self.vae_config.get('vae_buffer_size', vae_buffer_size))
         
         self.sac_config = sac_config
         
@@ -139,9 +139,7 @@ class CLASVAEAgent(BaseMARLAgent):
         
         strategies = [
             lambda size: np.random.uniform(-1, 1, (num_envs, 12)),  # Random for all envs
-            lambda size: np.random.normal(0, 0.3, (num_envs, 12)),  # Gaussian for all envs
-            lambda size: np.concatenate([np.random.uniform(-1, 1, (num_envs, 6)), np.zeros((num_envs, 6))], axis=1),  # One arm
-            lambda size: np.concatenate([np.zeros((num_envs, 6)), np.random.uniform(-1, 1, (num_envs, 6))], axis=1),  # Other arm
+            # add more strategies as needed
         ]
         
         pbar = tqdm(total=prefill_size, desc="Vectorized Prefill", unit="step")
@@ -224,61 +222,12 @@ class CLASVAEAgent(BaseMARLAgent):
 
         if self.logger:
             self.logger.info(f"Loaded {count} transitions into VAE buffer from '{path}'")
-        
-        
-    def _prefill_buffer(self,
-                        buffer: VAEBuf,
-                        prefill_size: int = 50000,
-                        max_episode_steps: int = 200) -> None:
-        """
-        Step the env with a hand-coded / random policy until
-        self.vae_buffer contains `prefill_size` transitions.
-        """
-        if self.logger:
-            self.logger.info(f"Prefilling VAE buffer with {prefill_size} transitions")
-
-        
-        obs_dict, infos = self.env.reset()  # Reset and weld the robots to the handle
-        
-        steps_in_ep = 0
-
-        pbar = tqdm(total=prefill_size, desc="Prefill", unit="step")
-        
-        while len(self.vae_buffer) < prefill_size:
-            # ----- cheap exploration policy -----
-            # completely random joint velocities in [-1, 1]
-            upward_u = np.random.uniform(-1.0, 1.0, size=(1, 12))
-            # rand_u = np.zeros((1, 14))
-            # Coordinated upward movement
-            # upward_u = np.zeros((1, 14))
-            # upward_u[0, 2] = 0.5  # Robot 0 vertical joint
-            # upward_u[0, 9] = 0.5  # Robot 1 vertical joint (assuming symmetric)
-            # OR: a scripted grab-and-weld controller you already have
-            # rand_u = my_scripted_weld_controller(obs_dict)
-
-            next_obs, reward, done, truncated, info = self.env.step(upward_u)
-            self.store_transition(buffer, obs_dict, upward_u)
-            pbar.update(1)
-
-            obs_dict = next_obs
-            steps_in_ep += 1
-
-            if done or steps_in_ep >= max_episode_steps:
-                obs_dict, infos = self.env.reset()
-                steps_in_ep = 0
-
-        pbar.close()
-        if self.logger:
-            self.logger.info("Prefill done ✓")
             
             
     def _prefill_buffer_diverse(self, buffer: VAEBuf, prefill_size: int = 50000, max_episode_steps: int = 200) -> None:
         """Collect data with various exploration strategies"""
         strategies = [
             lambda: np.random.uniform(-1, 1, 12),  # Random
-            lambda: np.random.normal(0, 0.3, 12),  # Gaussian noise
-            lambda: np.concatenate([np.random.uniform(-1, 1, 6), np.zeros(6)]),  # One arm
-            lambda: np.concatenate([np.zeros(6), np.random.uniform(-1, 1, 6)]),  # Other arm
         ]
         
         
@@ -408,10 +357,7 @@ class CLASVAEAgent(BaseMARLAgent):
         """
         return self.vae.decode_actions(obs_dict, latent_action)
 
-    def learn(self,
-          prefill_size: int     = 10000,
-          vae_updates:   int     = 200000,
-          max_episode_steps: int = 500) -> None:
+    def learn(self, vae_updates: int = 100000) -> None:
         """
         1) Collect `prefill_size` transitions with a random / scripted controller
         2) Run exactly `vae_updates` gradient steps on the VAE
@@ -419,14 +365,6 @@ class CLASVAEAgent(BaseMARLAgent):
         """
         
         vae_updates = self.vae_config.get("vae_updates", vae_updates)
-
-        # ------------- Phase 1: prefilling ----------
-        # self._prefill_buffer_diverse(self.vae_buffer, prefill_size * 10, max_episode_steps)
-        # self._prefill_buffer_diverse(self.vae_eval_buffer, prefill_size, max_episode_steps)
-        
-        latent_dims_to_test = [4, 6, 8, 12, 16]
-        hidden_dims_to_test = [128, 256, 512]  # Currently 256
-        num_layers_to_test = [2, 3, 4]
 
         self.train_mode()
         print("now training the VAE with {} updates".format(vae_updates))
@@ -462,6 +400,8 @@ class CLASVAEAgent(BaseMARLAgent):
         # ------------- save weights for later RL ----------
         self.save_vae("clas_vae_prefilled_beta.pt")
         
+        self.learn_SAC_policy()
+        
     def learn_SAC_policy(self):
         # Load VAE
         config = {
@@ -473,15 +413,6 @@ class CLASVAEAgent(BaseMARLAgent):
         
         # SAC config
         sac_config = self.sac_config
-        # sac_config = {
-        #     'gamma': 0.99,
-        #     'tau': 0.005,
-        #     'alpha': 0.2,
-        #     'lr': 3e-4,
-        #     'buffer_size': 1000000,
-        #     'batch_size': 256,
-        #     'start_steps': 100000
-        # }
         
         # Train policy
         agent, logs = self.train_clas_policy_vectorized(self.env, self.vae, sac_config, num_episodes=sac_config['num_episodes'])
@@ -495,6 +426,7 @@ class CLASVAEAgent(BaseMARLAgent):
         writer = SummaryWriter("runs/clas_sac")
         best_reward = -float("inf")
         episode_rewards, q1_losses, q2_losses, pi_losses, alpha_losses = [], [], [], [], []
+        vae_recon_losses, vae_kl_losses = [], []  # Track VAE losses during SAC training
         
         # Initialize SAC agent
         obs_dim = vae_model.full_obs_dim
@@ -552,6 +484,9 @@ class CLASVAEAgent(BaseMARLAgent):
         print(f"Prefilled replay buffer with {len(replay_buffer)} transitions")
         
         pbar = tqdm(total=num_episodes, desc="Training", unit="step")
+        sac_training_steps = 0
+        total_env_steps = 0
+        
         # Training loop
         for episode in range(num_episodes):
             obs_dict, infos = env.reset()
@@ -579,15 +514,53 @@ class CLASVAEAgent(BaseMARLAgent):
                     dones,
                     num_envs=num_envs
                 )
+                for env_idx in range(num_envs):
+                    single_obs = {k: v[env_idx] for k, v in obs_dict.items()}
+                    single_action = actions_batch[env_idx]
+                    self.store_transition(self.vae_buffer, single_obs, single_action)
+                
+                total_env_steps += num_envs
                 
                 # Train after storing
                 if len(replay_buffer) > config.get('start_steps', 100000):
+                    # SAC Training Step
                     loss_dict = agent.train_step(replay_buffer, batch_size=config.get('batch_size', 256))
+                    sac_training_steps += 1
+                        
                     if loss_dict is not None:
                         q1_losses.append(loss_dict['q1_loss'])
                         q2_losses.append(loss_dict['q2_loss'])
                         pi_losses.append(loss_dict['policy_loss'])
                         alpha_losses.append(loss_dict['alpha_loss'])
+                        
+                        # Log SAC losses to TensorBoard
+                        writer.add_scalar("sac/q1_loss", loss_dict['q1_loss'], total_env_steps)
+                        writer.add_scalar("sac/q2_loss", loss_dict['q2_loss'], total_env_steps)
+                        writer.add_scalar("sac/policy_loss", loss_dict['policy_loss'], total_env_steps)
+                        writer.add_scalar("sac/alpha_loss", loss_dict['alpha_loss'], total_env_steps)
+                    
+                    # JOINT VAE TRAINING: Train VAE periodically during SAC training
+                    if (sac_training_steps % self.vae_config.get("vae_train_freq", 4) == 0 and 
+                        len(self.vae_buffer) > self.min_buffer_size):
+                        
+                        # Perform multiple VAE updates
+                        for vae_step in range(self.vae_config.get("vae_updates_per_step", 1)):
+                            # Set VAE to training mode
+                            self.train_mode()  # This sets VAE components to train mode
+                            
+                            vae_losses = self.train_vae_step()
+                            
+                            if vae_losses:  # Only log if training actually happened
+                                vae_recon_losses.append(vae_losses['recon_loss'])
+                                vae_kl_losses.append(vae_losses['kl_loss'])
+                                
+                                # Log VAE losses to TensorBoard
+                                writer.add_scalar("joint_vae/recon_loss", vae_losses['recon_loss'], total_env_steps)
+                                writer.add_scalar("joint_vae/kl_loss", vae_losses['kl_loss'], total_env_steps)
+                                writer.add_scalar("joint_vae/total_loss", vae_losses['total_loss'], total_env_steps)
+                            
+                            # Set VAE back to eval mode for policy execution
+                            self.eval_mode()  # This sets VAE components to eval mode
                 
                 current_episode_rewards += rewards
                 obs_dict = next_obs_dict
@@ -597,16 +570,80 @@ class CLASVAEAgent(BaseMARLAgent):
             avg_episode_reward = np.mean(current_episode_rewards)
             episode_rewards.append(avg_episode_reward)
             
+            avg_reward = np.mean(episode_rewards[-10:])
+            # Periodic logging and evaluation
             if episode % 10 == 0:
-                avg_reward = np.mean(episode_rewards[-10:])
-                print(f"Ep {episode:4d} | R̄(10)={avg_reward:7.2f}")
+                mean_q1 = np.mean(q1_losses[-100:]) if q1_losses else 0.0
+                mean_q2 = np.mean(q2_losses[-100:]) if q2_losses else 0.0
+                mean_pi = np.mean(pi_losses[-100:]) if pi_losses else 0.0
+                mean_alp = np.mean(alpha_losses[-100:]) if alpha_losses else 0.0
+                mean_vae_recon = np.mean(vae_recon_losses[-100:]) if vae_recon_losses else 0.0
+                mean_vae_kl = np.mean(vae_kl_losses[-100:]) if vae_kl_losses else 0.0
+                
+                print(f"Ep {episode:4d} | R̄(10)={avg_reward:7.2f} "
+                    f"| SAC: q1={mean_q1:6.3f} q2={mean_q2:6.3f} π={mean_pi:6.3f} α={mean_alp:6.3f} "
+                    f"| VAE: recon={mean_vae_recon:6.3f} kl={mean_vae_kl:6.3f}")
+                
+                # TensorBoard logging
                 writer.add_scalar("reward/avg_10", avg_reward, episode)
+                writer.add_scalar("joint_vae/avg_recon_loss_100", mean_vae_recon, episode)
+                writer.add_scalar("joint_vae/avg_kl_loss_100", mean_vae_kl, episode)
+                writer.add_scalar("buffer_sizes/sac_buffer", len(replay_buffer), episode)
+                writer.add_scalar("buffer_sizes/vae_buffer", len(self.vae_buffer), episode)
+            
+            # VAE evaluation every 50 episodes
+            if episode % 50 == 0 and len(self.vae_eval_buffer) > self.min_buffer_size:
+                self.eval_mode()
+                eval_dict = self.evaluate_vae(self.vae, self.vae_eval_buffer, 50)
+                writer.add_scalar("joint_vae/val_recon_loss", eval_dict["val_recon_loss"], episode)
+                writer.add_scalar("joint_vae/val_kl_loss", eval_dict["val_kl"], episode)
+                writer.add_scalar("joint_vae/val_mse", eval_dict["val_mse"], episode)
+                
+                print(f"  VAE Eval: recon={eval_dict['val_recon_loss']:.4f} "
+                    f"kl={eval_dict['val_kl']:.4f} mse={eval_dict['val_mse']:.4f}")
+            
+            # Save checkpoints
+            if episode % 50 == 0 or avg_reward > best_reward:
+                best_reward = max(best_reward, avg_reward)
+                
+                # Save SAC checkpoint
+                sac_ckpt_name = f"sac_weights/clas_sac_ep{episode:05d}.pt"
+                agent.save_checkpoint(sac_ckpt_name, episode, avg_reward)
+                
+                # Save VAE checkpoint (joint training version)
+                vae_ckpt_name = f"joint_vae_weights/clas_vae_joint_ep{episode:05d}.pt"
+                os.makedirs("joint_vae_weights", exist_ok=True)
+                self.save_vae(vae_ckpt_name)
+                
+                print(f"  Saved checkpoints: SAC={sac_ckpt_name}, VAE={vae_ckpt_name}")
             
             pbar.update(1)
         
         pbar.close()
         writer.close()
-        return agent, {"episode_rewards": episode_rewards, "q1_losses": q1_losses, "q2_losses": q2_losses, "policy_losses": pi_losses, "alpha_losses": alpha_losses}
+        
+        # Final save
+        final_sac_path = "sac_weights/clas_sac_final_joint.pt"
+        final_vae_path = "joint_vae_weights/clas_vae_final_joint.pt"
+        agent.save_checkpoint(final_sac_path, num_episodes, avg_reward)
+        self.save_vae(final_vae_path)
+        
+        print(f"Joint training completed!")
+        print(f"Final SAC model saved to: {final_sac_path}")
+        print(f"Final VAE model saved to: {final_vae_path}")
+        print(f"Total environment steps: {total_env_steps}")
+        print(f"Total SAC training steps: {sac_training_steps}")
+        print(f"Total VAE training steps: {self.vae_training_steps}")
+        
+        return agent, {
+            "episode_rewards": episode_rewards,
+            "q1_losses": q1_losses,
+            "q2_losses": q2_losses,
+            "policy_losses": pi_losses,
+            "alpha_losses": alpha_losses,
+            "vae_recon_losses": vae_recon_losses,
+            "vae_kl_losses": vae_kl_losses
+        }
         
     
     def train_clas_policy(self, env, vae_model, config, num_episodes=1000):

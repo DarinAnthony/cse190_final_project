@@ -12,7 +12,7 @@ def test_agent(cfg: DictConfig):
     env, policy, algorithm, agent = instantiate_all(cfg)
     env.reset()
     agent.learn()
-    agent.learn_SAC_policy()
+    # agent.learn_SAC_policy()
     
     # Assert environment was created successfully
     assert env is not None

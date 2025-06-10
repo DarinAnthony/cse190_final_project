@@ -14,21 +14,27 @@ clas_training:
   vae_config: {
                 'latent_dim': 8,
                 'hidden_dim': 256,
-                'vae_buffer_train_prefill_size': 2000,
-                'vae_buffer_eval_prefill_size': 200,
-                'vae_updates': 20,
-                'max_episode_steps': 500
+                'vae_batch_size': 256,
+                'vae_buffer_size': 400000,
+                'vae_buffer_train_prefill_size': 100000,
+                'vae_buffer_eval_prefill_size': 10000,
+                'vae_updates': 100000,
+                'vae_train_freq': 1,
+                'max_episode_steps': 500,
+                'lr': 3e-5,
+                'vae_train_freq': 4,           # Train VAE every 4 SAC updates
+                'vae_updates_per_step': 1,     # Number of VAE updates per training step
             }
   
   sac_config: {
             'gamma': 0.99,
             'tau': 0.005,
-            'alpha': 0.2,
-            'lr': 3e-4,
+            'alpha': 0.25,
+            'lr': 5e-4,
             'buffer_size': 1000000,
             'batch_size': 256,
-            'start_steps': 100,
-            'num_episodes': 3
+            'start_steps': 10000,
+            'num_episodes': 1000
         }
 
 kwargs: 

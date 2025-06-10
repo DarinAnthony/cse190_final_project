@@ -110,9 +110,7 @@ class QNetwork(nn.Module):
 class CLASSAC:
     """SAC agent that operates in the latent action space"""
     def __init__(self, vae_model, obs_dim, latent_dim, config):
-        if torch.backends.mps.is_available():
-            self.device = torch.device("mps")
-        elif torch.cuda.is_available():
+        if torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
             self.device = torch.device("cpu")
