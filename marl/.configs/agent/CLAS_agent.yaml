@@ -19,7 +19,6 @@ clas_training:
                 'vae_buffer_train_prefill_size': 100000,
                 'vae_buffer_eval_prefill_size': 10000,
                 'vae_updates': 100000,
-                'vae_train_freq': 1,
                 'max_episode_steps': 500,
                 'lr': 3e-5,
                 'vae_train_freq': 4,           # Train VAE every 4 SAC updates
