@@ -103,7 +103,7 @@ class CLASDecoder(nn.Module):
         # Clamp logvar to avoid extreme values
         # This is optional but recommended to prevent numerical instability during training
         # try turning this off if anything goes wrong during training
-        logvar = logvar.clamp(min=-10, max=2)
+        # logvar = logvar.clamp(min=-10, max=2)
     
         return mu, logvar
 
